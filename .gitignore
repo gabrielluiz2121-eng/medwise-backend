@@ -1,0 +1,3 @@
+# Ignorar a chave do Firebase com extensão dupla e em subpastas
+firebase/serviceAccountKey.json.json
+**/serviceAccountKey*
