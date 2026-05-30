@@ -7,7 +7,7 @@ const app = express();
 app.use(cors({ origin: true }));
 app.use(express.json());
 
-// 🚀 ROTA DE TESTE (Sem Woovi, Sem Firebase)
+//  ROTA DE TESTE (Sem Woovi, Sem Firebase)
 app.post('/api/checkout', (req, res) => {
   const { userId } = req.body;
 
@@ -25,7 +25,7 @@ app.post('/api/checkout', (req, res) => {
 
 // Rota para testar direto no seu navegador
 app.get('/', (req, res) => {
-  res.send('🚀 O Servidor MedWise está online e respondendo na nuvem!');
+  res.send(' O Servidor MedWise está online e respondendo na nuvem!');
 });
 
 // Configuração de Porta para o Railway
