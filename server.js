@@ -1,3 +1,26 @@
+const express = require('express');
+const cors = require('cors');
+const admin = require('firebase-admin');
+const axios = require('axios');
+
+const app = express();
+
+app.use(cors({ origin: true }));
+app.use(express.json());
+
+// Inicializa o Firebase
+if (process.env.FIREBASE_CREDENTIALS) {
+  try {
+    const serviceAccount = JSON.parse(process.env.FIREBASE_CREDENTIALS);
+    admin.initializeApp({
+      credential: admin.credential.cert(serviceAccount)
+    });
+    console.log('[Firebase] Conectado com sucesso ao Firestore!');
+  } catch (error) {
+    console.error('[Firebase] Erro ao inicializar:', error.message);
+  }
+}
+
 // ROTA: Geração de Pix e Registo no Banco de Dados
 app.post('/api/checkout', async (req, res) => {
   const { userId, valueInCents = 2990 } = req.body; 
@@ -9,7 +32,7 @@ app.post('/api/checkout', async (req, res) => {
       return res.status(500).json({ error: "Chave da Woovi não configurada no servidor." });
     }
 
-    // Limpeza defensiva: remove aspas duplas, aspas simples, espaços e quebras de linha que o Railway possa ter injetado
+    // Limpeza defensiva: remove aspas, espaços e quebras de linha que o Railway possa ter injetado
     const cleanAppID = process.env.OPENPIX_APP_ID.replace(/['"\n\r\s]/g, '');
     console.log(`[Segurança] Chave sanitizada. Final da chave enviada: ...${cleanAppID.slice(-5)}`);
 
@@ -52,4 +75,13 @@ app.post('/api/checkout', async (req, res) => {
     console.error('[Erro na Integração]:', error.response ? error.response.data : error.message);
     return res.status(500).json({ error: "Erro interno ao processar pagamento" });
   }
+});
+
+app.get('/', (req, res) => {
+  res.send('🚀 Servidor MedWise ativo e a comunicar com a Woovi!');
+});
+
+const PORT = process.env.PORT || 8080;
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`Servidor ativo na porta ${PORT}`);
 });
