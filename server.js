@@ -1,96 +1,95 @@
 const express = require('express');
+const cors = require('cors');
 const axios = require('axios');
-const admin = require('./firebase/admin'); // O admin que corrigimos antes
+const admin = require('./firebase/admin'); // O inicializador seguro que criamos
 
 const app = express();
 
-// OBRIGATÓRIO: O Webhook da OpenPix envia JSON. Precisamos desse middleware.
+// PERMISSÕES: Permite que seu Web App do FlutterFlow acesse essa API sem bloqueios de CORS
+app.use(cors({ origin: true }));
 app.use(express.json());
 
-const OPENPIX_API_URL = 'https://api.openpix.com.br/v1';
+const WOOVI_API_URL = 'https://api.openpix.com.br/v1';
 
 // ==========================================
-// ROTA 1: CRIAR COBRANÇA PIX (Chamada pelo FlutterFlow)
+// ROTA 1: GERAR COBRANÇA PIX (Chamada pelo FlutterFlow Web)
 // ==========================================
 app.post('/api/checkout', async (req, res) => {
-  const { userId, valueInCents } = req.body; // Recebe o ID do usuário e o valor da assinatura
+  const { userId, valueInCents } = req.body;
 
   if (!userId) {
-    return res.status(400).json({ error: 'O userId é obrigatório.' });
+    return res.status(400).json({ error: 'O campo userId é obrigatório.' });
   }
 
   try {
-    // Geramos um ID único para essa transação no formato: UID_timestamp
+    // correlationID serve para rastrear o pagamento. Vinculamos o UID do usuário + timestamp
     const correlationID = `${userId}_${Date.now()}`;
 
-    // Requisição para a OpenPix criar a cobrança
-    const response = await axios.post(
-      `${OPENPIX_API_URL}/charge`,
-      {
-        correlationID: correlationID,
-        value: valueInCents || 2990, // Ex: R$ 29,90 se não enviado
-        comment: 'Assinatura Premium MedWise',
-      },
-      {
-        headers: {
-          'Authorization': process.env.OPENPIX_APP_ID,
-          'Content-Type': 'application/json',
-        },
+    // Payload de acordo com a documentação oficial da Woovi (/v1/charge)
+    const data = {
+      correlationID: correlationID,
+      value: valueInCents || 2990, // R$ 29,90 padrão se não enviado
+      comment: 'Assinatura Premium MedWise'
+    };
+
+    const response = await axios.post(`${WOOVI_API_URL}/charge`, data, {
+      headers: {
+        'Authorization': process.env.OPENPIX_APP_ID, // Sua API Key configurada no Railway
+        'Content-Type': 'application/json'
       }
-    );
+    });
 
-    // A OpenPix retorna o "brCode" (Copia e Cola) e a "paymentLinkUrl" (Página com QR Code)
-    const { brCode, paymentLinkUrl } = response.data.charge;
-
+    // Retorna os dados exatos que o FlutterFlow precisa para exibir o QR Code na tela
     return res.json({
       success: true,
-      pixCopiaCola: brCode,
-      linkPagamento: paymentLinkUrl,
+      correlationID: correlationID,
+      pixCopiaCola: response.data.charge.brCode,
+      qrcodeImagem: response.data.charge.qrCodeImage,
+      linkPagamento: response.data.charge.paymentLinkUrl
     });
 
   } catch (error) {
-    console.error('Erro ao gerar Pix:', error.response?.data || error.message);
-    return res.status(500).json({ error: 'Erro interno ao gerar cobrança Pix.' });
+    console.error('Erro Woovi API:', error.response?.data || error.message);
+    return res.status(500).json({ error: 'Falha ao gerar cobrança Pix.' });
   }
 });
 
 // ==========================================
-// ROTA 2: WEBHOOK (A OpenPix avisa aqui quando for pago)
+// ROTA 2: WEBHOOK (A Woovi avisa aqui quando o médico/estudante pagar)
 // ==========================================
 app.post('/api/webhook/openpix', async (req, res) => {
+  // 1. Responde imediatamente com 200 OK para a Woovi validar a rota com sucesso
+  res.status(200).send('OK');
+
   const payload = req.body;
 
-  // IMPORTANTE: Responda rápido à OpenPix para eles saberem que você recebeu o aviso
-  res.status(200).send('Webhook recebido');
-
   try {
-    // 1. Verifica se o evento é de um Pix pago/concluído
+    // 2. Filtra se o evento recebido é de uma cobrança paga com sucesso
     if (payload.event === 'OPENPIX:CHARGE_COMPLETED') {
-      const charge = payload.pix.charge;
-      const correlationID = charge.correlationID;
-
-      // 2. Extrai o userId que guardamos lá no correlationID (tudo antes do '_')
+      const correlationID = payload.pix.charge.correlationID;
+      
+      // Recupera o ID do usuário original que guardamos antes do "_"
       const userId = correlationID.split('_')[0];
 
-      console.log(`Pagamento confirmado para o usuário: ${userId}`);
+      console.log(`[Woovi] Pagamento aprovado para o usuário: ${userId}`);
 
-      // 3. Atualiza o status do usuário diretamente no Firestore do Firebase
+      // 3. Atualiza o Firestore usando o Firebase Admin
       const db = admin.firestore();
-      
       await db.collection('users').doc(userId).update({
         isPremium: true,
-        premiumUntil: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), // +30 dias de acesso
-        updatedAt: new Date(),
+        premiumUntil: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), // Libera por 30 dias
+        updatedAt: new Date()
       });
 
-      console.log(`Usuário ${userId} atualizado para Premium com sucesso!`);
+      console.log(`[Firestore] Status Premium ativado com sucesso para ${userId}`);
     }
   } catch (error) {
-    console.error('Erro ao processar Webhook:', error);
+    console.error('Erro ao processar o webhook da Woovi:', error.message);
   }
 });
 
+// Inicialização do servidor configurada para o ambiente do Railway (0.0.0.0)
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`Servidor rodando na porta ${PORT}`);
+  console.log(`Servidor MedWise ativo na porta ${PORT}`);
 });
