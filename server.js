@@ -1,13 +1,14 @@
 const express = require('express');
 const cors = require('cors');
 const admin = require('firebase-admin');
+const axios = require('axios');
 
 const app = express();
 
 app.use(cors({ origin: true }));
 app.use(express.json());
 
-// Inicializa o Firebase usando a variável de ambiente do Railway
+// Inicializa o Firebase
 if (process.env.FIREBASE_CREDENTIALS) {
   try {
     const serviceAccount = JSON.parse(process.env.FIREBASE_CREDENTIALS);
@@ -18,57 +19,59 @@ if (process.env.FIREBASE_CREDENTIALS) {
   } catch (error) {
     console.error('[Firebase] Erro ao inicializar:', error.message);
   }
-} else {
-  console.log('[Firebase] Erro: Variável FIREBASE_CREDENTIALS não encontrada.');
 }
 
-// ROTA: Teste de Escrita com Coleção Corrigida
+// ROTA: Geração de Pix Real na Woovi
 app.post('/api/checkout', async (req, res) => {
-  const { userId } = req.body;
+  // Recebe o ID do usuário e define 2990 (R$ 29,90) como valor padrão, caso não venha do FlutterFlow
+  const { userId, valueInCents = 2990 } = req.body; 
 
-  console.log(`[Railway] FF chamou! Tentando atualizar o documento na coleção 'user': ${userId}`);
+  console.log(`[Checkout] Iniciando geração de Pix para o UID: ${userId}`);
 
   try {
-    if (admin.apps.length === 0) {
-      return res.status(500).json({ error: "Firebase não está inicializado no servidor." });
+    if (!process.env.OPENPIX_APP_ID) {
+      return res.status(500).json({ error: "Chave da Woovi não configurada no servidor." });
     }
 
-    const db = admin.firestore();
-    
-    // Alvo ajustado para 'user' (singular) correspondendo exatamente ao seu banco de dados
-    const userRef = db.collection('user').doc(userId);
+    // 1. Gera um ID único para essa transação (Correlation ID)
+    // O Timestamp (Date.now) garante que o ID nunca se repita se o médico tentar gerar 2 vezes
+    const correlationID = `premium_${userId}_${Date.now()}`;
 
-    // Executa a escrita adicionando os campos de teste sem apagar o resto do documento
-    await userRef.set({
-      testeConexao: "OK",
-      ultimoTesteEm: new Date()
-    }, { merge: true });
+    // 2. Envia o pedido de cobrança para a Woovi
+    const wooviResponse = await axios.post('https://api.openpix.com.br/api/v1/charge', {
+      correlationID: correlationID,
+      value: valueInCents,
+      comment: "Assinatura Premium"
+    }, {
+      headers: {
+        'Authorization': process.env.OPENPIX_APP_ID,
+        'Content-Type': 'application/json'
+      }
+    });
 
-    console.log(`[Firestore] Documento ${userId} atualizado com sucesso com as informações de teste!`);
+    const chargeData = wooviResponse.data.charge;
+    console.log(`[Woovi] Pix gerado com sucesso! CorrelationID: ${correlationID}`);
 
-    // Busca o e-mail atualizado para confirmar que a operação foi completa
-    const updatedDoc = await userRef.get();
-    const userData = updatedDoc.data();
-
+    // 3. Retorna os dados oficiais para o FlutterFlow exibir na tela
     return res.json({
       success: true,
-      uidProcessado: userId,
-      emailConfirmado: userData.email || "E-mail não encontrado",
-      testeConexao: userData.testeConexao,
-      message: "Gravação e leitura na coleção 'user' validadas com sucesso!"
+      correlationID: correlationID,
+      pixCopiaCola: chargeData.brCode,
+      qrcodeImagem: chargeData.qrCodeImage,
+      linkPagamento: chargeData.paymentLinkUrl
     });
 
   } catch (error) {
-    console.error('[Erro de Escrita Firestore]:', error.message);
-    return res.status(500).json({ error: "Erro interno ao atualizar dados no Firebase" });
+    console.error('[Erro na Woovi]:', error.response ? error.response.data : error.message);
+    return res.status(500).json({ error: "Erro interno ao processar pagamento" });
   }
 });
 
 app.get('/', (req, res) => {
-  res.send('🚀 Servidor MedWise pronto para o teste definitivo de escrita no Firebase!');
+  res.send('🚀 Servidor MedWise ativo e gerando Pix com a Woovi!');
 });
 
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`Servidor de testes ativo na porta ${PORT}`);
+  console.log(`Servidor de produção ativo na porta ${PORT}`);
 });
