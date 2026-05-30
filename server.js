@@ -4,7 +4,6 @@ const admin = require('firebase-admin');
 
 const app = express();
 
-// Libera o acesso para o FlutterFlow Web
 app.use(cors({ origin: true }));
 app.use(express.json());
 
@@ -17,53 +16,61 @@ if (process.env.FIREBASE_CREDENTIALS) {
     });
     console.log('[Firebase] Conectado com sucesso ao Firestore!');
   } catch (error) {
-    console.error('[Firebase] Erro ao ler a variável FIREBASE_CREDENTIALS:', error.message);
+    console.error('[Firebase] Erro ao inicializar:', error.message);
   }
 } else {
-  console.log('[Firebase] Aviso: FIREBASE_CREDENTIALS não encontrada. Rodando sem banco de dados.');
+  console.log('[Firebase] Erro: Variável FIREBASE_CREDENTIALS não encontrada.');
 }
 
-// Rota de Teste (Agora simulando a gravação no banco)
+// Rota de Teste de Leitura de E-mail
 app.post('/api/checkout', async (req, res) => {
   const { userId } = req.body;
 
-  console.log(`[Railway] FF chamou! Tentando atualizar o usuário: ${userId}`);
+  console.log(`[Railway] Buscando no Firestore o e-mail do UID: ${userId}`);
 
   try {
-    // SE o Firebase estiver ativo, vamos tentar criar/atualizar um documento de teste no Firestore
-    if (admin.apps.length > 0) {
-      const db = admin.firestore();
-      
-      // Isso vai criar ou atualizar um documento na sua coleção 'users' com o ID enviado
-      await db.collection('users').doc(userId).set({
-        testeConexao: "OK",
-        atualizadoEm: new Date()
-      }, { merge: true }); // O merge garante que não vai apagar os dados que o usuário já tinha lá
-      
-      console.log(`[Firestore] Documento do usuário ${userId} atualizado com sucesso!`);
+    if (admin.apps.length === 0) {
+      return res.status(500).json({ error: "Firebase não está inicializado no servidor." });
     }
 
-    // Devolve a resposta de sucesso para o FlutterFlow
+    const db = admin.firestore();
+    // Busca o documento do usuário na coleção 'users'
+    const userDoc = await db.collection('users').doc(userId).get();
+
+    // Verifica se o usuário realmente existe no banco
+    if (!userDoc.exists) {
+      console.log(`[Firestore] Usuário com UID ${userId} não foi encontrado.`);
+      return res.status(404).json({
+        success: false,
+        message: `Usuário com UID [${userId}] não existe na coleção 'users'.`
+      });
+    }
+
+    // Pega os dados do documento
+    const userData = userDoc.data();
+    const userEmail = userData.email || "E-mail não cadastrado neste documento";
+
+    console.log(`[Firestore] Sucesso! O e-mail encontrado foi: ${userEmail}`);
+
+    // Retorna a resposta para o FlutterFlow incluindo o e-mail real do banco
     return res.json({
       success: true,
-      correlationID: `teste_firebase_${userId}`,
-      pixCopiaCola: "00020101021226870014br.gov.bcb.pix...TESTE_FIREBASE_OK",
-      qrcodeImagem: "https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=FirebaseFuncionando",
-      linkPagamento: "https://railway.app"
+      uidEnviado: userId,
+      emailEncontrado: userEmail,
+      message: "Comunicação e leitura do Firebase 100% OK!"
     });
 
   } catch (error) {
-    console.error('[Erro Firestore]:', error.message);
-    return res.status(500).json({ error: "Erro interno ao salvar no banco" });
+    console.error('[Erro de Leitura Firestore]:', error.message);
+    return res.status(500).json({ error: "Erro interno ao buscar dados no Firebase" });
   }
 });
 
-// Rota inicial do navegador
 app.get('/', (req, res) => {
-  res.send('🚀 Servidor MedWise online e integrado ao Firebase!');
+  res.send('🚀 Servidor MedWise ativo e aguardando testes de leitura do Firebase!');
 });
 
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`Servidor ativo na porta ${PORT}`);
+  console.log(`Servidor de leitura ativo na porta ${PORT}`);
 });
