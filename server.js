@@ -63,6 +63,12 @@ app.post('/api/webhook/openpix', async (req, res) => {
 
   const payload = req.body;
 
+  // 🌟 ADICIONE ESTAS LINHAS ABAIXO (Proteção contra o teste da Woovi)
+  if (payload.evento === 'teste_webhook' || payload.event === 'teste_webhook') {
+    console.log('[Woovi] Ping de teste recebido! Conexão com o Railway está 100% funcional.');
+    return; // Para a execução aqui para não dar erro tentando ler dados de um Pix falso
+  }
+
   try {
     // 2. Filtra se o evento recebido é de uma cobrança paga com sucesso
     if (payload.event === 'OPENPIX:CHARGE_COMPLETED') {
