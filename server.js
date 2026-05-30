@@ -22,11 +22,11 @@ if (process.env.FIREBASE_CREDENTIALS) {
   console.log('[Firebase] Erro: Variável FIREBASE_CREDENTIALS não encontrada.');
 }
 
-// Rota de Teste de Leitura de E-mail
+// ROTA: Teste de Escrita com Coleção Corrigida
 app.post('/api/checkout', async (req, res) => {
   const { userId } = req.body;
 
-  console.log(`[Railway] Buscando no Firestore o e-mail do UID: ${userId}`);
+  console.log(`[Railway] FF chamou! Tentando atualizar o documento na coleção 'user': ${userId}`);
 
   try {
     if (admin.apps.length === 0) {
@@ -34,43 +34,41 @@ app.post('/api/checkout', async (req, res) => {
     }
 
     const db = admin.firestore();
-    // Busca o documento do usuário na coleção 'users'
-    const userDoc = await db.collection('user').doc(userId).get();
+    
+    // Alvo ajustado para 'user' (singular) correspondendo exatamente ao seu banco de dados
+    const userRef = db.collection('user').doc(userId);
 
-    // Verifica se o usuário realmente existe no banco
-    if (!userDoc.exists) {
-      console.log(`[Firestore] Usuário com UID ${userId} não foi encontrado.`);
-      return res.status(404).json({
-        success: false,
-        message: `Usuário com UID [${userId}] não existe na coleção 'users'.`
-      });
-    }
+    // Executa a escrita adicionando os campos de teste sem apagar o resto do documento
+    await userRef.set({
+      testeConexao: "OK",
+      ultimoTesteEm: new Date()
+    }, { merge: true });
 
-    // Pega os dados do documento
-    const userData = userDoc.data();
-    const userEmail = userData.email || "E-mail não cadastrado neste documento";
+    console.log(`[Firestore] Documento ${userId} atualizado com sucesso com as informações de teste!`);
 
-    console.log(`[Firestore] Sucesso! O e-mail encontrado foi: ${userEmail}`);
+    // Busca o e-mail atualizado para confirmar que a operação foi completa
+    const updatedDoc = await userRef.get();
+    const userData = updatedDoc.data();
 
-    // Retorna a resposta para o FlutterFlow incluindo o e-mail real do banco
     return res.json({
       success: true,
-      uidEnviado: userId,
-      emailEncontrado: userEmail,
-      message: "Comunicação e leitura do Firebase 100% OK!"
+      uidProcessado: userId,
+      emailConfirmado: userData.email || "E-mail não encontrado",
+      testeConexao: userData.testeConexao,
+      message: "Gravação e leitura na coleção 'user' validadas com sucesso!"
     });
 
   } catch (error) {
-    console.error('[Erro de Leitura Firestore]:', error.message);
-    return res.status(500).json({ error: "Erro interno ao buscar dados no Firebase" });
+    console.error('[Erro de Escrita Firestore]:', error.message);
+    return res.status(500).json({ error: "Erro interno ao atualizar dados no Firebase" });
   }
 });
 
 app.get('/', (req, res) => {
-  res.send('🚀 Servidor MedWise ativo e aguardando testes de leitura do Firebase!');
+  res.send('🚀 Servidor MedWise pronto para o teste definitivo de escrita no Firebase!');
 });
 
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`Servidor de leitura ativo na porta ${PORT}`);
+  console.log(`Servidor de testes ativo na porta ${PORT}`);
 });
