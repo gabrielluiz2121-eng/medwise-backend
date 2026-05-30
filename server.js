@@ -35,7 +35,7 @@ app.post('/api/checkout', async (req, res) => {
 
     const db = admin.firestore();
     // Busca o documento do usuário na coleção 'users'
-    const userDoc = await db.collection('users').doc(userId).get();
+    const userDoc = await db.collection('user').doc(userId).get();
 
     // Verifica se o usuário realmente existe no banco
     if (!userDoc.exists) {
