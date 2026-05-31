@@ -59,13 +59,14 @@ app.post('/api/checkout', async (req, res) => {
       }, { merge: true });
     }
 
-    return res.json([JSON.stringify({
-      success: true,
-      correlationID: correlationID,
-      pixCopiaCola: chargeData.brCode,
-      qrcodeImagem: chargeData.qrCodeImage,
-      linkPagamento: chargeData.paymentLinkUrl
-    })]);
+// Retorna os dados como uma lista contendo o objeto JSON real (sem JSON.stringify)
+return res.json([{
+  success: true,
+  correlationID: correlationID,
+  pixCopiaCola: chargeData.brCode,
+  qrcodeImagem: chargeData.qrCodeImage,
+  linkPagamento: chargeData.paymentLinkUrl
+}]);
 
   } catch (error) {
     console.error('[Erro na Integração]:', error.response ? error.response.data : error.message);
