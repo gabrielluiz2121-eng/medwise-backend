@@ -39,7 +39,7 @@ app.post('/api/checkout', async (req, res) => {
     const correlationID = `premium_${userId}_${Date.now()}`;
 
     // POST ajustado com cabeçalho Accept e URL openpix
-    const wooviResponse = await axios.post('https://api.openpix-sandbox.com.br/api/v1/charge', {
+    const wooviResponse = await axios.post('https://api.woovi-sandbox.com/api/v1/charge', {
       correlationID: correlationID,
       value: valueInCents,
       comment: "Assinatura Premium MedWise"
