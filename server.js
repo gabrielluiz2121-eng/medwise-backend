@@ -21,7 +21,7 @@ if (process.env.FIREBASE_CREDENTIALS) {
   }
 }
 
-// ROTA: Geração de Pix e Registo no Banco de Dados
+// ROTA 1: Geração de Pix e Registo no Banco de Dados
 app.post('/api/checkout', async (req, res) => {
   const { userId, valueInCents = 2990 } = req.body; 
 
@@ -29,16 +29,15 @@ app.post('/api/checkout', async (req, res) => {
 
   try {
     if (!process.env.OPENPIX_APP_ID) {
-      return res.status(500).json({ error: "Chave da Woovi não configurada no servidor." });
+      return res.status(500).json(["Chave da Woovi não configurada no servidor."]);
     }
 
-    // Limpeza defensiva: remove aspas, espaços e quebras de linha que o Railway possa ter injetado
     const cleanAppID = process.env.OPENPIX_APP_ID.replace(/['"\n\r\s]/g, '');
     console.log(`[Segurança] Chave sanitizada. Final da chave enviada: ...${cleanAppID.slice(-5)}`);
 
     const correlationID = `premium_${userId}_${Date.now()}`;
 
-    // POST ajustado com cabeçalho Accept e URL openpix
+    // Usando a URL do Sandbox que validámos
     const wooviResponse = await axios.post('https://api.woovi-sandbox.com/api/v1/charge', {
       correlationID: correlationID,
       value: valueInCents,
@@ -58,27 +57,75 @@ app.post('/api/checkout', async (req, res) => {
       const db = admin.firestore();
       await db.collection('user').doc(userId).set({
         ultimoPagamentoID: correlationID,
-        statusPagamento: "PENDENTE"
+        statusPagamento: "PENDENTE",
+        planoPremium: false
       }, { merge: true });
       console.log(`[Firestore] Intenção de compra registada para o utilizador ${userId}.`);
     }
 
-    return res.json({
+    // Retorna os dados em lista de strings conforme o seu padrão, transformando o JSON principal em string para o frontend ler
+    return res.json([JSON.stringify({
       success: true,
       correlationID: correlationID,
       pixCopiaCola: chargeData.brCode,
       qrcodeImagem: chargeData.qrCodeImage,
       linkPagamento: chargeData.paymentLinkUrl
-    });
+    })]);
 
   } catch (error) {
     console.error('[Erro na Integração]:', error.response ? error.response.data : error.message);
-    return res.status(500).json({ error: "Erro interno ao processar pagamento" });
+    return res.status(500).json(["Erro interno ao processar pagamento"]);
+  }
+});
+
+// ROTA 2: Webhook da Woovi (Recebe a confirmação de pagamento)
+app.post('/api/webhook', async (req, res) => {
+  console.log('[Webhook] Notificação recebida da Woovi!');
+
+  try {
+    const evento = req.body.event;
+    const charge = req.body.charge;
+
+    // A Woovi envia o evento 'CHARGE_COMPLETED' quando o Pix é pago
+    if (evento === 'CHARGE_COMPLETED' && charge && charge.correlationID) {
+      const correlationID = charge.correlationID;
+      console.log(`[Webhook] Pagamento confirmado! Processando ID: ${correlationID}`);
+
+      if (admin.apps.length > 0) {
+        const db = admin.firestore();
+        
+        // Procura na coleção 'user' o documento que tem este correlationID
+        const usersRef = db.collection('user');
+        const snapshot = await usersRef.where('ultimoPagamentoID', '==', correlationID).get();
+
+        if (!snapshot.empty) {
+          // Atualiza o utilizador para Premium
+          const batch = db.batch();
+          snapshot.forEach(doc => {
+            batch.update(doc.ref, { 
+              statusPagamento: "PAGO",
+              planoPremium: true // Flag que o FlutterFlow vai ler para liberar a app
+            });
+          });
+          await batch.commit();
+          console.log('[Firestore] Acesso premium ativado com sucesso!');
+        } else {
+          console.log('[Firestore] Alerta: Nenhum utilizador encontrado com este CorrelationID.');
+        }
+      }
+    }
+
+    // A Woovi precisa apenas de um Status 200 para saber que recebemos o aviso
+    return res.status(200).json(["Webhook processado com sucesso"]);
+
+  } catch (error) {
+    console.error('[Erro no Webhook]:', error);
+    return res.status(500).json(["Erro interno ao processar webhook"]);
   }
 });
 
 app.get('/', (req, res) => {
-  res.send('🚀 Servidor MedWise ativo e a comunicar com a Woovi!');
+  res.send('🚀 Servidor ativo: Gerando Pix e escutando Webhooks!');
 });
 
 const PORT = process.env.PORT || 8080;
