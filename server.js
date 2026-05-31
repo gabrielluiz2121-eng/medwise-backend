@@ -81,30 +81,30 @@ app.post('/api/checkout', async (req, res) => {
 // ROTA 2: Webhook da Woovi (Recebe a confirmação de pagamento)
 app.post('/api/webhook', async (req, res) => {
   console.log('[Webhook] Notificação recebida da Woovi!');
+  
+  // NOVA LINHA: Imprime o que a Woovi mandou para sabermos o nome exato do evento
+  console.log('[Webhook Payload]:', JSON.stringify(req.body, null, 2)); 
 
   try {
     const evento = req.body.event;
-    const charge = req.body.charge;
+    const charge = req.body.charge || req.body.data?.charge; // Ajuste por segurança na estrutura da Woovi
 
-    // A Woovi envia o evento 'CHARGE_COMPLETED' quando o Pix é pago
-    if (evento === 'CHARGE_COMPLETED' && charge && charge.correlationID) {
+    // Usando .includes() para capturar caso o evento venha como "OPENPIX:CHARGE_COMPLETED"
+    if (evento && evento.includes('CHARGE_COMPLETED') && charge && charge.correlationID) {
       const correlationID = charge.correlationID;
       console.log(`[Webhook] Pagamento confirmado! Processando ID: ${correlationID}`);
 
       if (admin.apps.length > 0) {
         const db = admin.firestore();
-        
-        // Procura na coleção 'user' o documento que tem este correlationID
         const usersRef = db.collection('user');
         const snapshot = await usersRef.where('ultimoPagamentoID', '==', correlationID).get();
 
         if (!snapshot.empty) {
-          // Atualiza o utilizador para Premium
           const batch = db.batch();
           snapshot.forEach(doc => {
             batch.update(doc.ref, { 
               statusPagamento: "PAGO",
-              planoPremium: true // Flag que o FlutterFlow vai ler para liberar a app
+              planoPremium: true 
             });
           });
           await batch.commit();
@@ -113,9 +113,10 @@ app.post('/api/webhook', async (req, res) => {
           console.log('[Firestore] Alerta: Nenhum utilizador encontrado com este CorrelationID.');
         }
       }
+    } else {
+      console.log(`[Webhook] Evento ignorado ou incompleto. Evento recebido: ${evento}`);
     }
 
-    // A Woovi precisa apenas de um Status 200 para saber que recebemos o aviso
     return res.status(200).json(["Webhook processado com sucesso"]);
 
   } catch (error) {
