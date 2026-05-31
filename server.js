@@ -33,11 +33,8 @@ app.post('/api/checkout', async (req, res) => {
     }
 
     const cleanAppID = process.env.OPENPIX_APP_ID.replace(/['"\n\r\s]/g, '');
-    console.log(`[Segurança] Chave sanitizada. Final da chave enviada: ...${cleanAppID.slice(-5)}`);
-
     const correlationID = `premium_${userId}_${Date.now()}`;
 
-    // Usando a URL do Sandbox que validámos
     const wooviResponse = await axios.post('https://api.woovi-sandbox.com/api/v1/charge', {
       correlationID: correlationID,
       value: valueInCents,
@@ -60,10 +57,8 @@ app.post('/api/checkout', async (req, res) => {
         statusPagamento: "PENDENTE",
         planoPremium: false
       }, { merge: true });
-      console.log(`[Firestore] Intenção de compra registada para o utilizador ${userId}.`);
     }
 
-    // Retorna os dados em lista de strings conforme o seu padrão, transformando o JSON principal em string para o frontend ler
     return res.json([JSON.stringify({
       success: true,
       correlationID: correlationID,
@@ -80,19 +75,14 @@ app.post('/api/checkout', async (req, res) => {
 
 // ROTA 2: Webhook da Woovi (Recebe a confirmação de pagamento)
 app.post('/api/webhook', async (req, res) => {
-  console.log('[Webhook] Notificação recebida da Woovi!');
-  
-  // NOVA LINHA: Imprime o que a Woovi mandou para sabermos o nome exato do evento
-  console.log('[Webhook Payload]:', JSON.stringify(req.body, null, 2)); 
-
   try {
     const evento = req.body.event;
-    const charge = req.body.charge || req.body.data?.charge; // Ajuste por segurança na estrutura da Woovi
+    const charge = req.body.charge || req.body.data?.charge;
 
-    // Usando .includes() para capturar caso o evento venha como "OPENPIX:CHARGE_COMPLETED"
+    // Só executa a lógica e gera logs se for de fato uma confirmação de pagamento de Pix concluído
     if (evento && evento.includes('CHARGE_COMPLETED') && charge && charge.correlationID) {
       const correlationID = charge.correlationID;
-      console.log(`[Webhook] Pagamento confirmado! Processando ID: ${correlationID}`);
+      console.log(`[Webhook] Pix Pago Confirmado! Processando ID: ${correlationID}`);
 
       if (admin.apps.length > 0) {
         const db = admin.firestore();
@@ -108,15 +98,14 @@ app.post('/api/webhook', async (req, res) => {
             });
           });
           await batch.commit();
-          console.log('[Firestore] Acesso premium ativado com sucesso!');
+          console.log(`[Firestore] Plano Premium ativado com sucesso para o ID: ${correlationID}`);
         } else {
-          console.log('[Firestore] Alerta: Nenhum utilizador encontrado com este CorrelationID.');
+          console.log(`[Firestore] Alerta: Nenhum utilizador correspondente ao ID: ${correlationID}`);
         }
       }
-    } else {
-      console.log(`[Webhook] Evento ignorado ou incompleto. Evento recebido: ${evento}`);
     }
 
+    // Retorna o sucesso de forma limpa
     return res.status(200).json(["Webhook processado com sucesso"]);
 
   } catch (error) {
