@@ -155,6 +155,7 @@
     "string_decoder": "^1.3.0",
     "string-width": "^4.2.3",
     "strip-ansi": "^6.0.1",
+    "stripe": "^22.2.0",
     "strnum": "^2.3.0",
     "stubs": "^3.0.0",
     "teeny-request": "^9.0.0",

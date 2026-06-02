@@ -2,13 +2,49 @@ const express = require('express');
 const cors = require('cors');
 const admin = require('firebase-admin');
 const axios = require('axios');
+// 1. Stripe inicializado logo no topo junto com as outras bibliotecas
+const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY); 
 
 const app = express();
 
+// 2. Webhook do Stripe (DEVE ficar antes do app.use(express.json) para não quebrar a assinatura digital)
+app.post('/api/webhook-stripe', express.raw({ type: 'application/json' }), async (req, res) => {
+  const sig = req.headers['stripe-signature'];
+  let event;
+
+  try {
+    event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
+  } catch (err) {
+    return res.status(400).send(`Webhook Error: ${err.message}`);
+  }
+
+  if (event.type === 'checkout.session.completed') {
+    const session = event.data.object;
+    const userId = session.metadata.userId;
+    const planType = session.metadata.planType;
+
+    console.log(`[Stripe Webhook] Assinatura paga com sucesso para o usuário: ${userId}`);
+
+    if (admin.apps.length > 0) {
+      const db = admin.firestore();
+      
+      await db.collection('user').doc(userId).set({
+        statusPagamento: "PAGO",
+        planoPremium: true,
+        tipoPlano: planType,
+        stripeSubscriptionID: session.subscription
+      }, { merge: true });
+    }
+  }
+
+  res.json({ received: true });
+});
+
+// 3. Middlewares globais
 app.use(cors({ origin: true }));
 app.use(express.json());
 
-// Inicializa o Firebase
+// 4. Inicializa o Firebase
 if (process.env.FIREBASE_CREDENTIALS) {
   try {
     const serviceAccount = JSON.parse(process.env.FIREBASE_CREDENTIALS);
@@ -21,18 +57,17 @@ if (process.env.FIREBASE_CREDENTIALS) {
   }
 }
 
-// ROTA 1: Criação de Assinatura Pix
+// 5. ROTA: Criação de Assinatura Pix (Woovi)
 app.post('/api/checkout', async (req, res) => {
   const { userId, planType = 'mensal' } = req.body; 
 
-  console.log(`[Checkout] Criando assinatura [${planType.toUpperCase()}] para o UID: ${userId}`);
+  console.log(`[Checkout Woovi] Criando assinatura [${planType.toUpperCase()}] para o UID: ${userId}`);
 
-  // Definição de valores com base no plano escolhido
-  let valueInCents = 1990; // R$ 19,90 padrão mensal
+  let valueInCents = 1990;
   let interval = 'MONTHLY';
 
   if (planType.toLowerCase() === 'anual') {
-    valueInCents = 19900; // R$ 199,00 anual
+    valueInCents = 19900;
     interval = 'YEARLY';
   }
 
@@ -44,13 +79,11 @@ app.post('/api/checkout', async (req, res) => {
     const cleanAppID = process.env.OPENPIX_APP_ID.replace(/['"\n\r\s]/g, '');
     const correlationID = `sub_${userId}_${Date.now()}`;
 
-    // Chamada baseada na documentação de Subscription da Woovi
     const wooviResponse = await axios.post('https://api.woovi-sandbox.com/api/v1/subscriptions', {
       reference: correlationID,
       value: valueInCents,
       interval: interval,
       name: `Assinatura MedWise - Plano ${planType.toUpperCase()}`,
-      // Nota: Dependendo da regra do Sandbox, pode ser necessário passar um objeto customer mockado.
       customer: {
         name: "Médico Teste Silva",
         taxID: "00000000000" 
@@ -63,24 +96,21 @@ app.post('/api/checkout', async (req, res) => {
       }
     });
 
-    // A Woovi retorna a subscription criada e a primeira cobrança (charge) dentro dela
     const subscriptionData = wooviResponse.data.subscription;
-    const chargeData = wooviResponse.data.charge; // Primeira fatura gerada
+    const chargeData = wooviResponse.data.charge;
 
     console.log(`[Woovi] Assinatura iniciada! ID: ${subscriptionData.globalID}`);
 
     if (admin.apps.length > 0) {
       const db = admin.firestore();
       
-      // 1. Atualiza o status atual do usuário para aguardando pagamento
       await db.collection('user').doc(userId).set({
-        ultimoPagamentoID: chargeData.correlationID, // Monitoramos a cobrança atual no Webhook
+        ultimoPagamentoID: chargeData.correlationID,
         subscriptionID: subscriptionData.globalID,
         tipoPlano: planType.toUpperCase(),
         statusPagamento: "PENDENTE"
       }, { merge: true });
 
-      // 2. Cria um registro na coleção histórica de assinaturas
       await db.collection('assinaturas').doc(subscriptionData.globalID).set({
         userId: userId,
         status: "PENDING",
@@ -90,7 +120,6 @@ app.post('/api/checkout', async (req, res) => {
       });
     }
 
-    // Retorna os dados limpos em formato de array exigido pelo seu ecossistema
     return res.json([{
       success: true,
       correlationID: chargeData.correlationID,
@@ -100,21 +129,66 @@ app.post('/api/checkout', async (req, res) => {
     }]);
 
   } catch (error) {
-    console.error('[Erro na Assinatura]:', error.response ? error.response.data : error.message);
-    return res.status(500).json(["Erro interno ao processar assinatura"]);
+    console.error('[Erro na Assinatura Woovi]:', error.response ? error.response.data : error.message);
+    return res.status(500).json(["Erro interno ao processar assinatura Woovi"]);
   }
 });
 
-// ROTA 2: Webhook da Woovi (Mantido para escutar os pagamentos das faturas das assinaturas)
+// 6. ROTA: Criação de Assinatura Cartão (Stripe)
+app.post('/api/checkout-stripe', async (req, res) => {
+  const { userId, planType = 'mensal' } = req.body;
+
+  console.log(`[Stripe Checkout] Criando assinatura [${planType.toUpperCase()}] para o UID: ${userId}`);
+
+  let priceId = process.env.STRIPE_PRICE_MENSAL;
+  if (planType.toLowerCase() === 'anual') {
+    priceId = process.env.STRIPE_PRICE_ANUAL;
+  }
+
+  try {
+    if (!process.env.STRIPE_SECRET_KEY || !priceId) {
+      return res.status(500).json(["Configurações do Stripe ausentes no servidor."]);
+    }
+
+    const session = await stripe.checkout.sessions.create({
+      mode: 'subscription',
+      payment_method_types: ['card'], 
+      line_items: [
+        {
+          price: priceId,
+          quantity: 1,
+        },
+      ],
+      success_url: `https://checkout.medwise.app.br/sucesso?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `https://checkout.medwise.app.br/cancelado`,
+      metadata: {
+        userId: userId,
+        planType: planType.toUpperCase()
+      },
+    });
+
+    console.log(`[Stripe] Sessão criada com sucesso! ID: ${session.id}`);
+
+    return res.json([{
+      success: true,
+      url: session.url 
+    }]);
+
+  } catch (error) {
+    console.error('[Erro no Stripe Checkout]:', error.message);
+    return res.status(500).json(["Erro interno ao processar checkout do Stripe"]);
+  }
+});
+
+// 7. Webhook da Woovi
 app.post('/api/webhook', async (req, res) => {
   try {
     const evento = req.body.event;
     const charge = req.body.charge || req.body.data?.charge;
 
-    // Quando o cliente paga a primeira ou qualquer fatura subsequente da assinatura
     if (evento && evento.includes('CHARGE_COMPLETED') && charge && charge.correlationID) {
       const correlationID = charge.correlationID;
-      console.log(`[Webhook] Mensalidade/Anuidade Paga! Processando ID: ${correlationID}`);
+      console.log(`[Webhook Woovi] Mensalidade/Anuidade Paga! Processando ID: ${correlationID}`);
 
       if (admin.apps.length > 0) {
         const db = admin.firestore();
@@ -126,13 +200,11 @@ app.post('/api/webhook', async (req, res) => {
           snapshot.forEach(doc => {
             const userData = doc.data();
             
-            // Atualiza o usuário para Premium ativo
             batch.update(doc.ref, { 
               statusPagamento: "PAGO",
               planoPremium: true 
             });
 
-            // Atualiza a tabela de assinaturas vinculada
             if (userData.subscriptionID) {
               const subRef = db.collection('assinaturas').doc(userData.subscriptionID);
               batch.update(subRef, { status: "ACTIVE", updatedAt: new Date() });
@@ -151,8 +223,9 @@ app.post('/api/webhook', async (req, res) => {
   }
 });
 
+// 8. Rota Base e Inicialização do Servidor (SEMPRE NO FINAL)
 app.get('/', (req, res) => {
-  res.send('🚀 Servidor MedWise ativo com suporte a Assinaturas Recorrentes!');
+  res.send('🚀 Servidor MedWise ativo com suporte a Assinaturas Recorrentes via Woovi e Stripe!');
 });
 
 const PORT = process.env.PORT || 8080;
