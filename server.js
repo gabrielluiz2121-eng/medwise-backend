@@ -2,12 +2,13 @@ const express = require('express');
 const cors = require('cors');
 const admin = require('firebase-admin');
 const axios = require('axios');
-// 1. Stripe inicializado logo no topo junto com as outras bibliotecas
+
+// 1. Inicialização do Stripe com a chave secreta
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY); 
 
 const app = express();
 
-// 2. Webhook do Stripe (DEVE ficar antes do app.use(express.json) para não quebrar a assinatura digital)
+// 2. Webhook do Stripe (DEVE ficar antes do express.json para não quebrar a assinatura digital)
 app.post('/api/webhook-stripe', express.raw({ type: 'application/json' }), async (req, res) => {
   const sig = req.headers['stripe-signature'];
   let event;
@@ -40,7 +41,7 @@ app.post('/api/webhook-stripe', express.raw({ type: 'application/json' }), async
   res.json({ received: true });
 });
 
-// 3. Middlewares globais
+// 3. Middlewares globais (A partir daqui o servidor entende JSON)
 app.use(cors({ origin: true }));
 app.use(express.json());
 
@@ -134,11 +135,11 @@ app.post('/api/checkout', async (req, res) => {
   }
 });
 
-// 6. ROTA: Criação de Assinatura Cartão (Stripe)
-app.post('/api/checkout-stripe', async (req, res) => {
+// 6. ROTA NOVA: Criação de Assinatura Cartão (Stripe Embedded)
+app.post('/api/checkout-stripe-embedded', async (req, res) => {
   const { userId, planType = 'mensal' } = req.body;
 
-  console.log(`[Stripe Checkout] Criando assinatura [${planType.toUpperCase()}] para o UID: ${userId}`);
+  console.log(`[Stripe Embedded] Criando intenção [${planType.toUpperCase()}] para o UID: ${userId}`);
 
   let priceId = process.env.STRIPE_PRICE_MENSAL;
   if (planType.toLowerCase() === 'anual') {
@@ -147,36 +148,37 @@ app.post('/api/checkout-stripe', async (req, res) => {
 
   try {
     if (!process.env.STRIPE_SECRET_KEY || !priceId) {
-      return res.status(500).json(["Configurações do Stripe ausentes no servidor."]);
+      return res.status(500).json(["Configurações do Stripe ausentes."]);
     }
 
     const session = await stripe.checkout.sessions.create({
+      ui_mode: 'embedded',
       mode: 'subscription',
-      payment_method_types: ['card'], 
+      payment_method_types: ['card'],
       line_items: [
         {
           price: priceId,
           quantity: 1,
         },
       ],
-      success_url: `https://checkout.medwise.app.br/sucesso?session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `https://checkout.medwise.app.br/cancelado`,
+      return_url: `https://checkout.medwise.app.br/retorno?session_id={CHECKOUT_SESSION_ID}`,
       metadata: {
         userId: userId,
         planType: planType.toUpperCase()
       },
     });
 
-    console.log(`[Stripe] Sessão criada com sucesso! ID: ${session.id}`);
+    console.log(`[Stripe Embedded] Sessão criada! Secret: ${session.client_secret.substring(0, 10)}...`);
 
+    // Retorna a lista contendo o segredo para renderizar o iframe no frontend
     return res.json([{
       success: true,
-      url: session.url 
+      client_secret: session.client_secret
     }]);
 
   } catch (error) {
-    console.error('[Erro no Stripe Checkout]:', error.message);
-    return res.status(500).json(["Erro interno ao processar checkout do Stripe"]);
+    console.error('[Erro no Stripe Embedded]:', error.message);
+    return res.status(500).json(["Erro ao criar sessão embedded no Stripe"]);
   }
 });
 
@@ -218,14 +220,14 @@ app.post('/api/webhook', async (req, res) => {
 
     return res.status(200).json(["Webhook de assinatura processado"]);
   } catch (error) {
-    console.error('[Erro no Webhook]:', error);
-    return res.status(500).json(["Erro interno ao processar webhook"]);
+    console.error('[Erro no Webhook Woovi]:', error);
+    return res.status(500).json(["Erro interno ao processar webhook da Woovi"]);
   }
 });
 
-// 8. Rota Base e Inicialização do Servidor (SEMPRE NO FINAL)
+// 8. Rota Base e Inicialização do Servidor
 app.get('/', (req, res) => {
-  res.send('🚀 Servidor MedWise ativo com suporte a Assinaturas Recorrentes via Woovi e Stripe!');
+  res.send('🚀 Servidor MedWise ativo com suporte a Assinaturas (Woovi Pix + Stripe Embedded)!');
 });
 
 const PORT = process.env.PORT || 8080;
