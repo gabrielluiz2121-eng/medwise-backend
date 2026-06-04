@@ -152,7 +152,7 @@ app.post('/api/checkout-stripe-embedded', async (req, res) => {
     }
 
     const session = await stripe.checkout.sessions.create({
-      ui_mode: 'embedded',
+      ui_mode: 'embedded_page', // <--- A MUDANÇA É EXATAMENTE AQUI
       mode: 'subscription',
       payment_method_types: ['card'],
       line_items: [
