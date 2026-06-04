@@ -3,12 +3,12 @@ const cors = require('cors');
 const admin = require('firebase-admin');
 const axios = require('axios');
 
-// 1. Inicialização do Stripe com a chave secreta
+// Inicialização do Stripe com a chave secreta
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY); 
 
 const app = express();
 
-// 2. Webhook do Stripe (DEVE ficar antes do express.json para não quebrar a assinatura digital)
+// Webhook do Stripe (DEVE ficar antes do express.json para não quebrar a assinatura digital)
 app.post('/api/webhook-stripe', express.raw({ type: 'application/json' }), async (req, res) => {
   const sig = req.headers['stripe-signature'];
   let event;
@@ -41,11 +41,11 @@ app.post('/api/webhook-stripe', express.raw({ type: 'application/json' }), async
   res.json({ received: true });
 });
 
-// 3. Middlewares globais (A partir daqui o servidor entende JSON)
+// Middlewares globais (A partir daqui o servidor entende JSON)
 app.use(cors({ origin: true }));
 app.use(express.json());
 
-// 4. Inicializa o Firebase
+// Inicializa o Firebase
 if (process.env.FIREBASE_CREDENTIALS) {
   try {
     const serviceAccount = JSON.parse(process.env.FIREBASE_CREDENTIALS);
@@ -58,7 +58,7 @@ if (process.env.FIREBASE_CREDENTIALS) {
   }
 }
 
-// 5. ROTA: Criação de Assinatura Pix (Woovi)
+// ROTA: Criação de Assinatura Pix (Woovi)
 app.post('/api/checkout', async (req, res) => {
   const { userId, planType = 'mensal' } = req.body; 
 
@@ -135,7 +135,7 @@ app.post('/api/checkout', async (req, res) => {
   }
 });
 
-// 6. ROTA NOVA: Criação de Assinatura Cartão (Stripe Embedded)
+// ROTA NOVA: Criação de Assinatura Cartão (Stripe Embedded)
 app.post('/api/checkout-stripe-embedded', async (req, res) => {
   const { userId, planType = 'mensal' } = req.body;
 
@@ -170,7 +170,7 @@ app.post('/api/checkout-stripe-embedded', async (req, res) => {
 
     console.log(`[Stripe Embedded] Sessão criada! Secret: ${session.client_secret.substring(0, 10)}...`);
 
-    // Retorna a lista contendo o segredo para renderizar o iframe no frontend
+    // Retorno em lista para manter a consistência de formatação solicitada
     return res.json([{
       success: true,
       client_secret: session.client_secret
@@ -182,7 +182,7 @@ app.post('/api/checkout-stripe-embedded', async (req, res) => {
   }
 });
 
-// 7. Webhook da Woovi
+// Webhook da Woovi
 app.post('/api/webhook', async (req, res) => {
   try {
     const evento = req.body.event;
@@ -225,7 +225,7 @@ app.post('/api/webhook', async (req, res) => {
   }
 });
 
-// 8. Rota Base e Inicialização do Servidor
+// Rota Base e Inicialização do Servidor
 app.get('/', (req, res) => {
   res.send('🚀 Servidor MedWise ativo com suporte a Assinaturas (Woovi Pix + Stripe Embedded)!');
 });
