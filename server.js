@@ -11,22 +11,22 @@ let db;
 try {
   if (!admin.apps.length) {
     if (!process.env.FIREBASE_SERVICE_ACCOUNT) {
-      throw new Error("A variável FIREBASE_SERVICE_ACCOUNT está vazia ou não existe.");
+      throw new Error("A variável FIREBASE_SERVICE_ACCOUNT está vazia ou não existe no Railway.");
     }
 
     const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
     admin.initializeApp({
       credential: admin.credential.cert(serviceAccount)
     });
+    
+    // A variável db é declarada no topo (let) e populada aqui
     db = admin.firestore();
     console.log("Firebase Admin inicializado com sucesso!");
   }
 } catch (error) {
   console.error("🚨 ERRO CRÍTICO no Firebase Admin:", error.message);
-  // O servidor continuará rodando para a rota de checkout funcionar, 
-  // mas o webhook falhará ao tentar acessar o banco de dados.
+  // Se houver erro, a variável db fica vazia, mas o servidor continua rodando.
 }
-const db = admin.firestore();
 
 const app = express();
 
@@ -36,29 +36,29 @@ app.use(cors());
 // ==========================================
 // 2. WEBHOOK DO STRIPE (MUITO IMPORTANTE: DEVE VIR ANTES DO EXPRESS.JSON)
 // ==========================================
-// A Stripe exige o corpo cru (raw) da requisição para validar a assinatura de segurança
 app.post('/api/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
   const sig = req.headers['stripe-signature'];
   let event;
 
   try {
-    // Valida se a requisição realmente veio da Stripe
     event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
   } catch (err) {
     console.error(`[Erro Webhook] Falha na assinatura: ${err.message}`);
     return res.status(400).send(`Webhook Error: ${err.message}`);
   }
 
-  // Se o pagamento da assinatura foi concluído com sucesso
   if (event.type === 'checkout.session.completed') {
     const session = event.data.object;
-
-    // Resgata os metadados que enviamos na hora de criar o checkout
     const userId = session.metadata.userId;
     const planType = session.metadata.planType; 
 
+    // Verifica se o Firebase foi conectado corretamente antes de tentar atualizar
+    if (!db) {
+        console.error(`[Erro Crítico Webhook] Impossível salvar o UID ${userId}. O Firebase (db) não está conectado.`);
+        return res.status(500).json({ error: "Banco de dados indisponível." });
+    }
+
     try {
-      // Atualiza o documento do usuário direto no banco de dados
       await db.collection('users').doc(userId).update({
         planoAtivo: planType,
         statusAssinatura: 'ativa',
@@ -72,17 +72,13 @@ app.post('/api/webhook', express.raw({ type: 'application/json' }), async (req, 
     }
   }
 
-  // Retorna 200 para a Stripe não tentar reenviar o evento
   res.status(200).json({ received: true });
 });
-
 
 // ==========================================
 // 3. MIDDLEWARES GERAIS
 // ==========================================
-// A partir daqui, as rotas recebem JSON formatado normalmente
 app.use(express.json());
-
 
 // ==========================================
 // 4. ROTA DE CRIAÇÃO DO CHECKOUT
@@ -103,7 +99,7 @@ app.post('/api/checkout-stripe-embedded', async (req, res) => {
     }
 
     const session = await stripe.checkout.sessions.create({
-      ui_mode: 'embedded_page', // Correção da nomenclatura atual da Stripe
+      ui_mode: 'embedded_page',
       mode: 'subscription',
       payment_method_types: ['card'],
       line_items: [
@@ -121,7 +117,6 @@ app.post('/api/checkout-stripe-embedded', async (req, res) => {
 
     console.log(`[Stripe Embedded] Sessão criada! Secret: ${session.client_secret.substring(0, 10)}...`);
 
-    // Retornando em formato de lista para manter a consistência de agrupamento no FlutterFlow
     return res.json([{
       success: true,
       client_secret: session.client_secret
@@ -132,7 +127,6 @@ app.post('/api/checkout-stripe-embedded', async (req, res) => {
     return res.status(500).json(["Erro ao criar sessão embedded no Stripe"]);
   }
 });
-
 
 // ==========================================
 // 5. INICIALIZAÇÃO DO SERVIDOR
