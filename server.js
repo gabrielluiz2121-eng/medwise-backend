@@ -1,141 +1,83 @@
 const express = require('express');
 const cors = require('cors');
+const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const admin = require('firebase-admin');
-const axios = require('axios');
 
-// Inicialização do Stripe com a chave secreta
-const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY); 
+// ==========================================
+// 1. INICIALIZAÇÃO DO FIREBASE ADMIN
+// ==========================================
+if (!admin.apps.length) {
+  try {
+    const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+    admin.initializeApp({
+      credential: admin.credential.cert(serviceAccount)
+    });
+    console.log("Firebase Admin inicializado com sucesso!");
+  } catch (error) {
+    console.error("Erro ao inicializar Firebase Admin. Verifique a variável FIREBASE_SERVICE_ACCOUNT.", error.message);
+  }
+}
+const db = admin.firestore();
 
 const app = express();
 
-// Webhook do Stripe (DEVE ficar antes do express.json para não quebrar a assinatura digital)
-app.post('/api/webhook-stripe', express.raw({ type: 'application/json' }), async (req, res) => {
+// Permite requisições do seu app/web
+app.use(cors());
+
+// ==========================================
+// 2. WEBHOOK DO STRIPE (MUITO IMPORTANTE: DEVE VIR ANTES DO EXPRESS.JSON)
+// ==========================================
+// A Stripe exige o corpo cru (raw) da requisição para validar a assinatura de segurança
+app.post('/api/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
   const sig = req.headers['stripe-signature'];
   let event;
 
   try {
+    // Valida se a requisição realmente veio da Stripe
     event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
   } catch (err) {
+    console.error(`[Erro Webhook] Falha na assinatura: ${err.message}`);
     return res.status(400).send(`Webhook Error: ${err.message}`);
   }
 
+  // Se o pagamento da assinatura foi concluído com sucesso
   if (event.type === 'checkout.session.completed') {
     const session = event.data.object;
+
+    // Resgata os metadados que enviamos na hora de criar o checkout
     const userId = session.metadata.userId;
-    const planType = session.metadata.planType;
+    const planType = session.metadata.planType; 
 
-    console.log(`[Stripe Webhook] Assinatura paga com sucesso para o usuário: ${userId}`);
-
-    if (admin.apps.length > 0) {
-      const db = admin.firestore();
-      
-      await db.collection('user').doc(userId).set({
-        statusPagamento: "PAGO",
-        planoPremium: true,
-        tipoPlano: planType,
-        stripeSubscriptionID: session.subscription
-      }, { merge: true });
+    try {
+      // Atualiza o documento do usuário direto no banco de dados
+      await db.collection('users').doc(userId).update({
+        planoAtivo: planType,
+        statusAssinatura: 'ativa',
+        stripeCustomerId: session.customer,
+        stripeSubscriptionId: session.subscription,
+        dataAtualizacao: admin.firestore.FieldValue.serverTimestamp()
+      });
+      console.log(`[Sucesso] Usuário ${userId} atualizado no banco para o plano ${planType}`);
+    } catch (error) {
+      console.error(`[Erro Firebase] Falha ao atualizar UID ${userId}:`, error.message);
     }
   }
 
-  res.json({ received: true });
+  // Retorna 200 para a Stripe não tentar reenviar o evento
+  res.status(200).json({ received: true });
 });
 
-// Middlewares globais (A partir daqui o servidor entende JSON)
-app.use(cors({ origin: true }));
+
+// ==========================================
+// 3. MIDDLEWARES GERAIS
+// ==========================================
+// A partir daqui, as rotas recebem JSON formatado normalmente
 app.use(express.json());
 
-// Inicializa o Firebase
-if (process.env.FIREBASE_CREDENTIALS) {
-  try {
-    const serviceAccount = JSON.parse(process.env.FIREBASE_CREDENTIALS);
-    admin.initializeApp({
-      credential: admin.credential.cert(serviceAccount)
-    });
-    console.log('[Firebase] Conectado com sucesso ao Firestore!');
-  } catch (error) {
-    console.error('[Firebase] Erro ao inicializar:', error.message);
-  }
-}
 
-// ROTA: Criação de Assinatura Pix (Woovi)
-app.post('/api/checkout', async (req, res) => {
-  const { userId, planType = 'mensal' } = req.body; 
-
-  console.log(`[Checkout Woovi] Criando assinatura [${planType.toUpperCase()}] para o UID: ${userId}`);
-
-  let valueInCents = 1990;
-  let interval = 'MONTHLY';
-
-  if (planType.toLowerCase() === 'anual') {
-    valueInCents = 19900;
-    interval = 'YEARLY';
-  }
-
-  try {
-    if (!process.env.OPENPIX_APP_ID) {
-      return res.status(500).json(["Chave da Woovi não configurada no servidor."]);
-    }
-
-    const cleanAppID = process.env.OPENPIX_APP_ID.replace(/['"\n\r\s]/g, '');
-    const correlationID = `sub_${userId}_${Date.now()}`;
-
-    const wooviResponse = await axios.post('https://api.woovi-sandbox.com/api/v1/subscriptions', {
-      reference: correlationID,
-      value: valueInCents,
-      interval: interval,
-      name: `Assinatura MedWise - Plano ${planType.toUpperCase()}`,
-      customer: {
-        name: "Médico Teste Silva",
-        taxID: "00000000000" 
-      }
-    }, {
-      headers: {
-        'Accept': 'application/json',
-        'Authorization': cleanAppID, 
-        'Content-Type': 'application/json'
-      }
-    });
-
-    const subscriptionData = wooviResponse.data.subscription;
-    const chargeData = wooviResponse.data.charge;
-
-    console.log(`[Woovi] Assinatura iniciada! ID: ${subscriptionData.globalID}`);
-
-    if (admin.apps.length > 0) {
-      const db = admin.firestore();
-      
-      await db.collection('user').doc(userId).set({
-        ultimoPagamentoID: chargeData.correlationID,
-        subscriptionID: subscriptionData.globalID,
-        tipoPlano: planType.toUpperCase(),
-        statusPagamento: "PENDENTE"
-      }, { merge: true });
-
-      await db.collection('assinaturas').doc(subscriptionData.globalID).set({
-        userId: userId,
-        status: "PENDING",
-        intervalo: interval,
-        valor: valueInCents / 100,
-        createdAt: new Date()
-      });
-    }
-
-    return res.json([{
-      success: true,
-      correlationID: chargeData.correlationID,
-      pixCopiaCola: chargeData.brCode,
-      qrcodeImagem: chargeData.qrCodeImage,
-      linkPagamento: chargeData.paymentLinkUrl
-    }]);
-
-  } catch (error) {
-    console.error('[Erro na Assinatura Woovi]:', error.response ? error.response.data : error.message);
-    return res.status(500).json(["Erro interno ao processar assinatura Woovi"]);
-  }
-});
-
-// ROTA NOVA: Criação de Assinatura Cartão (Stripe Embedded)
+// ==========================================
+// 4. ROTA DE CRIAÇÃO DO CHECKOUT
+// ==========================================
 app.post('/api/checkout-stripe-embedded', async (req, res) => {
   const { userId, planType = 'mensal' } = req.body;
 
@@ -152,7 +94,7 @@ app.post('/api/checkout-stripe-embedded', async (req, res) => {
     }
 
     const session = await stripe.checkout.sessions.create({
-      ui_mode: 'embedded_page', // <--- A MUDANÇA É EXATAMENTE AQUI
+      ui_mode: 'embedded_page', // Correção da nomenclatura atual da Stripe
       mode: 'subscription',
       payment_method_types: ['card'],
       line_items: [
@@ -170,7 +112,7 @@ app.post('/api/checkout-stripe-embedded', async (req, res) => {
 
     console.log(`[Stripe Embedded] Sessão criada! Secret: ${session.client_secret.substring(0, 10)}...`);
 
-    // Retorno em lista para manter a consistência de formatação solicitada
+    // Retornando em formato de lista para manter a consistência de agrupamento no FlutterFlow
     return res.json([{
       success: true,
       client_secret: session.client_secret
@@ -182,55 +124,11 @@ app.post('/api/checkout-stripe-embedded', async (req, res) => {
   }
 });
 
-// Webhook da Woovi
-app.post('/api/webhook', async (req, res) => {
-  try {
-    const evento = req.body.event;
-    const charge = req.body.charge || req.body.data?.charge;
 
-    if (evento && evento.includes('CHARGE_COMPLETED') && charge && charge.correlationID) {
-      const correlationID = charge.correlationID;
-      console.log(`[Webhook Woovi] Mensalidade/Anuidade Paga! Processando ID: ${correlationID}`);
-
-      if (admin.apps.length > 0) {
-        const db = admin.firestore();
-        const usersRef = db.collection('user');
-        const snapshot = await usersRef.where('ultimoPagamentoID', '==', correlationID).get();
-
-        if (!snapshot.empty) {
-          const batch = db.batch();
-          snapshot.forEach(doc => {
-            const userData = doc.data();
-            
-            batch.update(doc.ref, { 
-              statusPagamento: "PAGO",
-              planoPremium: true 
-            });
-
-            if (userData.subscriptionID) {
-              const subRef = db.collection('assinaturas').doc(userData.subscriptionID);
-              batch.update(subRef, { status: "ACTIVE", updatedAt: new Date() });
-            }
-          });
-          await batch.commit();
-          console.log(`[Firestore] Assinatura Ativada/Renovada com sucesso!`);
-        }
-      }
-    }
-
-    return res.status(200).json(["Webhook de assinatura processado"]);
-  } catch (error) {
-    console.error('[Erro no Webhook Woovi]:', error);
-    return res.status(500).json(["Erro interno ao processar webhook da Woovi"]);
-  }
-});
-
-// Rota Base e Inicialização do Servidor
-app.get('/', (req, res) => {
-  res.send('🚀 Servidor MedWise ativo com suporte a Assinaturas (Woovi Pix + Stripe Embedded)!');
-});
-
-const PORT = process.env.PORT || 8080;
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`Servidor ativo na porta ${PORT}`);
+// ==========================================
+// 5. INICIALIZAÇÃO DO SERVIDOR
+// ==========================================
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`Servidor rodando na porta ${PORT}`);
 });
