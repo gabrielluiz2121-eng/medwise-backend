@@ -136,7 +136,7 @@ app.post('/api/checkout-stripe-embedded', async (req, res) => {
           quantity: 1,
         },
       ],
-return_url: `medwise://home?status=sucesso`,
+return_url: `medwise://medwise2.com/Home`,
       metadata: {
         userId: userId,
         planType: planType.toUpperCase()
