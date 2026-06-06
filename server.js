@@ -52,23 +52,51 @@ app.post('/api/webhook', express.raw({ type: 'application/json' }), async (req, 
     const userId = session.metadata.userId;
     const planType = session.metadata.planType; 
 
-    // Verifica se o Firebase foi conectado corretamente antes de tentar atualizar
     if (!db) {
         console.error(`[Erro Crítico Webhook] Impossível salvar o UID ${userId}. O Firebase (db) não está conectado.`);
         return res.status(500).json({ error: "Banco de dados indisponível." });
     }
 
     try {
-      await db.collection('user').doc(userId).update({
+      // 1. Atualizar o Perfil do Usuário (mantido para o app ler rapidamente)
+      const updateUser = db.collection('user').doc(userId).set({
         planoAtivo: planType,
         statusAssinatura: 'ativa',
         stripeCustomerId: session.customer,
         stripeSubscriptionId: session.subscription,
         dataAtualizacao: admin.firestore.FieldValue.serverTimestamp()
-      });
-      console.log(`[Sucesso] Usuário ${userId} atualizado no banco para o plano ${planType}`);
+      }, { merge: true });
+
+      // 2. Registrar na coleção 'assinaturas' (Usamos o ID da assinatura da Stripe para evitar duplicatas)
+      const createAssinatura = db.collection('assinaturas').doc(session.subscription).set({
+        userId: userId,
+        plano: planType,
+        status: 'ativa',
+        stripeCustomerId: session.customer,
+        stripeSubscriptionId: session.subscription,
+        criadoEm: admin.firestore.FieldValue.serverTimestamp()
+      }, { merge: true });
+
+      // 3. Registrar na coleção 'pagamentos' (Usamos o ID da sessão de checkout)
+      const valorFormatado = session.amount_total / 100; // A Stripe envia valores em centavos (ex: 2990 = 29.90)
+      
+      const createPagamento = db.collection('pagamentos').doc(session.id).set({
+        userId: userId,
+        plano: planType,
+        valor: valorFormatado,
+        moeda: session.currency,
+        statusPagamento: session.payment_status,
+        stripeCustomerId: session.customer,
+        stripeSubscriptionId: session.subscription,
+        dataPagamento: admin.firestore.FieldValue.serverTimestamp()
+      }, { merge: true });
+
+      // Executa as três operações no banco de dados ao mesmo tempo
+      await Promise.all([updateUser, createAssinatura, createPagamento]);
+
+      console.log(`[Sucesso] Usuário ${userId} atualizado, assinatura e pagamento registrados.`);
     } catch (error) {
-      console.error(`[Erro Firebase] Falha ao atualizar UID ${userId}:`, error.message);
+      console.error(`[Erro Firebase] Falha ao registrar dados para UID ${userId}:`, error.message);
     }
   }
 
