@@ -59,7 +59,7 @@ app.post('/api/webhook', express.raw({ type: 'application/json' }), async (req, 
     }
 
     try {
-      await db.collection('users').doc(userId).update({
+      await db.collection('user').doc(userId).update({
         planoAtivo: planType,
         statusAssinatura: 'ativa',
         stripeCustomerId: session.customer,
