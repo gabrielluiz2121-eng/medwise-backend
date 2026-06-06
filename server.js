@@ -136,7 +136,7 @@ app.post('/api/checkout-stripe-embedded', async (req, res) => {
           quantity: 1,
         },
       ],
-      return_url: `https://checkout.medwise.app.br/retorno?session_id={CHECKOUT_SESSION_ID}`,
+return_url: `medwise://home?status=sucesso`,
       metadata: {
         userId: userId,
         planType: planType.toUpperCase()
