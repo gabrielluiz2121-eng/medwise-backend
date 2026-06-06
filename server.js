@@ -6,16 +6,25 @@ const admin = require('firebase-admin');
 // ==========================================
 // 1. INICIALIZAÇÃO DO FIREBASE ADMIN
 // ==========================================
-if (!admin.apps.length) {
-  try {
+let db;
+
+try {
+  if (!admin.apps.length) {
+    if (!process.env.FIREBASE_SERVICE_ACCOUNT) {
+      throw new Error("A variável FIREBASE_SERVICE_ACCOUNT está vazia ou não existe.");
+    }
+
     const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
     admin.initializeApp({
       credential: admin.credential.cert(serviceAccount)
     });
+    db = admin.firestore();
     console.log("Firebase Admin inicializado com sucesso!");
-  } catch (error) {
-    console.error("Erro ao inicializar Firebase Admin. Verifique a variável FIREBASE_SERVICE_ACCOUNT.", error.message);
   }
+} catch (error) {
+  console.error("🚨 ERRO CRÍTICO no Firebase Admin:", error.message);
+  // O servidor continuará rodando para a rota de checkout funcionar, 
+  // mas o webhook falhará ao tentar acessar o banco de dados.
 }
 const db = admin.firestore();
 
