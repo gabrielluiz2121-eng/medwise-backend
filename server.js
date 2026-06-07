@@ -180,4 +180,100 @@ app.post('/api/webhook/woovi', async (req, res) => {
       }, { merge: true });
 
       const createAssinatura = db.collection('assinaturas').doc(subId).set({
-        userId, plano: planType, status: 'ativa', gateway
+        userId: userId, 
+        plano: planType, 
+        status: 'ativa', 
+        gateway: 'woovi', 
+        wooviSubscriptionId: subId,
+        criadoEm: admin.firestore.FieldValue.serverTimestamp()
+      }, { merge: true });
+
+      const createPagamento = db.collection('pagamentos').doc(charge.correlationID).set({
+        userId: userId, 
+        plano: planType, 
+        valor: charge.value / 100, 
+        moeda: 'BRL', 
+        statusPagamento: 'paid', 
+        gateway: 'woovi',
+        dataPagamento: admin.firestore.FieldValue.serverTimestamp()
+      }, { merge: true });
+
+      await Promise.all([updateUser, createAssinatura, createPagamento]);
+    } catch (error) {
+      console.error(`[Erro Firebase Woovi]:`, error.message);
+    }
+  }
+  res.status(200).json([{ received: true }]);
+});
+
+// ==========================================
+// 7. ORQUESTRADOR: GERENCIAMENTO E CANCELAMENTO
+// ==========================================
+
+// 7.1 Rota Unificada de Portal
+app.post('/api/gerenciar-assinatura', async (req, res) => {
+  const { userId } = req.body;
+
+  try {
+    const userDoc = await db.collection('user').doc(userId).get();
+    if (!userDoc.exists) return res.status(404).json([{ error: "erro_usuario_nao_encontrado" }]);
+    
+    const userData = userDoc.data();
+
+    if (userData.gateway === 'stripe') {
+      const portalSession = await stripe.billingPortal.sessions.create({
+        customer: userData.stripeCustomerId,
+        return_url: 'medwise://home', 
+      });
+      return res.json([{ url: portalSession.url }]);
+    } 
+    
+    if (userData.gateway === 'woovi') {
+      return res.json([{ status: "gateway_woovi" }]); 
+    }
+
+    return res.status(400).json([{ error: "erro_sem_assinatura" }]);
+  } catch (error) {
+    return res.status(500).json([{ error: "erro_gerar_portal" }]);
+  }
+});
+
+// 7.2 Rota Unificada de Cancelamento
+app.post('/api/cancelar-assinatura', async (req, res) => {
+  const { userId } = req.body;
+
+  try {
+    const userDoc = await db.collection('user').doc(userId).get();
+    const userData = userDoc.data();
+
+    if (userData.gateway === 'stripe' && userData.stripeSubscriptionId) {
+      await stripe.subscriptions.cancel(userData.stripeSubscriptionId);
+    } 
+    else if (userData.gateway === 'woovi' && userData.wooviSubscriptionId) {
+      const response = await fetch(`https://api.woovi.com/api/v1/subscriptions/${userData.wooviSubscriptionId}/cancel`, {
+        method: 'PUT',
+        headers: { 'Authorization': process.env.WOOVI_APP_ID }
+      });
+      if (!response.ok) throw new Error("Falha na Woovi");
+    }
+
+    await db.collection('user').doc(userId).update({
+      statusAssinatura: 'cancelada',
+      planoAtivo: 'gratuito'
+    });
+
+    return res.json([{ status: "cancelamento_efetuado" }]);
+
+  } catch (error) {
+    console.error('[Erro Cancelamento]:', error.message);
+    return res.status(500).json([{ error: "erro_ao_cancelar" }]);
+  }
+});
+
+// ==========================================
+// 8. INICIALIZAÇÃO DO SERVIDOR
+// ==========================================
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`Servidor rodando na porta ${PORT}`);
+});
