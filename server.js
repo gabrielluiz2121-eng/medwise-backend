@@ -155,7 +155,55 @@ return_url: `medwise://medwise2.com/Home`,
     return res.status(500).json(["Erro ao criar sessão embedded no Stripe"]);
   }
 });
+// ==========================================
+// 4B. ROTA DO PORTAL DE GERENCIAMENTO (STRIPE PORTAL)
+// ==========================================
+app.post('/api/stripe-portal', async (req, res) => {
+  const { userId } = req.body;
 
+  if (!userId) {
+    return res.status(400).json(["O userId é obrigatório."]);
+  }
+
+  try {
+    if (!db) {
+      return res.status(500).json(["Banco de dados indisponível."]);
+    }
+
+    // 1. Busca o documento do usuário no Firebase para pegar o ID da Stripe
+    const userDoc = await db.collection('user').doc(userId).get();
+
+    if (!userDoc.exists) {
+      return res.status(404).json(["Usuário não encontrado no banco de dados."]);
+    }
+
+    const userData = userDoc.data();
+    const customerId = userData.stripeCustomerId;
+
+    // Se o usuário nunca comprou nada, ele não tem esse ID ainda
+    if (!customerId) {
+      return res.status(400).json(["Este usuário não possui uma assinatura ativa ou histórico no cartão."]);
+    }
+
+    // 2. Cria a sessão do Portal da Stripe
+    const portalSession = await stripe.billingPortal.sessions.create({
+      customer: customerId,
+      return_url: 'medwise://home', // Link profundo que joga o usuário de volta pro app ao sair
+    });
+
+    console.log(`[Stripe Portal] Link gerado para o UID: ${userId}`);
+
+    // Retorna no formato de lista com objeto que o FlutterFlow adora ler
+    return res.json([{
+      success: true,
+      url: portalSession.url
+    }]);
+
+  } catch (error) {
+    console.error('[Erro no Stripe Portal]:', error.message);
+    return res.status(500).json(["Erro ao gerar link do portal de gerenciamento."]);
+  }
+});
 // ==========================================
 // 5. INICIALIZAÇÃO DO SERVIDOR
 // ==========================================
