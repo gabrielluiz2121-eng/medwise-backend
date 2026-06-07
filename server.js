@@ -7,43 +7,36 @@ const admin = require('firebase-admin');
 // 1. INICIALIZAÇÃO DO FIREBASE ADMIN
 // ==========================================
 let db;
-
 try {
   if (!admin.apps.length) {
     if (!process.env.FIREBASE_SERVICE_ACCOUNT) {
       throw new Error("A variável FIREBASE_SERVICE_ACCOUNT está vazia ou não existe no Railway.");
     }
-
     const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
     admin.initializeApp({
       credential: admin.credential.cert(serviceAccount)
     });
-    
-    // A variável db é declarada no topo (let) e populada aqui
     db = admin.firestore();
     console.log("Firebase Admin inicializado com sucesso!");
   }
 } catch (error) {
   console.error("🚨 ERRO CRÍTICO no Firebase Admin:", error.message);
-  // Se houver erro, a variável db fica vazia, mas o servidor continua rodando.
 }
 
 const app = express();
-
-// Permite requisições do seu app/web
 app.use(cors());
 
 // ==========================================
-// 2. WEBHOOK DO STRIPE (MUITO IMPORTANTE: DEVE VIR ANTES DO EXPRESS.JSON)
+// 2. WEBHOOK DO STRIPE (Requer express.raw)
 // ==========================================
-app.post('/api/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
+app.post('/api/webhook/stripe', express.raw({ type: 'application/json' }), async (req, res) => {
   const sig = req.headers['stripe-signature'];
   let event;
 
   try {
     event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
   } catch (err) {
-    console.error(`[Erro Webhook] Falha na assinatura: ${err.message}`);
+    console.error(`[Erro Webhook Stripe] Falha: ${err.message}`);
     return res.status(400).send(`Webhook Error: ${err.message}`);
   }
 
@@ -52,160 +45,215 @@ app.post('/api/webhook', express.raw({ type: 'application/json' }), async (req, 
     const userId = session.metadata.userId;
     const planType = session.metadata.planType; 
 
-    if (!db) {
-        console.error(`[Erro Crítico Webhook] Impossível salvar o UID ${userId}. O Firebase (db) não está conectado.`);
-        return res.status(500).json({ error: "Banco de dados indisponível." });
-    }
+    if (!db) return res.status(500).json(["erro_banco_dados"]);
 
     try {
-      // 1. Atualizar o Perfil do Usuário (mantido para o app ler rapidamente)
       const updateUser = db.collection('user').doc(userId).set({
         planoAtivo: planType,
         statusAssinatura: 'ativa',
+        gateway: 'stripe', // FLAG IMPORTANTE PARA O ORQUESTRADOR
         stripeCustomerId: session.customer,
         stripeSubscriptionId: session.subscription,
         dataAtualizacao: admin.firestore.FieldValue.serverTimestamp()
       }, { merge: true });
 
-      // 2. Registrar na coleção 'assinaturas' (Usamos o ID da assinatura da Stripe para evitar duplicatas)
       const createAssinatura = db.collection('assinaturas').doc(session.subscription).set({
         userId: userId,
         plano: planType,
         status: 'ativa',
+        gateway: 'stripe',
         stripeCustomerId: session.customer,
         stripeSubscriptionId: session.subscription,
         criadoEm: admin.firestore.FieldValue.serverTimestamp()
       }, { merge: true });
 
-      // 3. Registrar na coleção 'pagamentos' (Usamos o ID da sessão de checkout)
-      const valorFormatado = session.amount_total / 100; // A Stripe envia valores em centavos (ex: 2990 = 29.90)
-      
       const createPagamento = db.collection('pagamentos').doc(session.id).set({
         userId: userId,
         plano: planType,
-        valor: valorFormatado,
+        valor: session.amount_total / 100,
         moeda: session.currency,
         statusPagamento: session.payment_status,
-        stripeCustomerId: session.customer,
-        stripeSubscriptionId: session.subscription,
+        gateway: 'stripe',
         dataPagamento: admin.firestore.FieldValue.serverTimestamp()
       }, { merge: true });
 
-      // Executa as três operações no banco de dados ao mesmo tempo
       await Promise.all([updateUser, createAssinatura, createPagamento]);
-
-      console.log(`[Sucesso] Usuário ${userId} atualizado, assinatura e pagamento registrados.`);
+      console.log(`[Stripe] Assinatura salva para UID ${userId}`);
     } catch (error) {
-      console.error(`[Erro Firebase] Falha ao registrar dados para UID ${userId}:`, error.message);
+      console.error(`[Erro Firebase Stripe]:`, error.message);
     }
   }
-
-  res.status(200).json({ received: true });
+  res.status(200).json(["recebido"]);
 });
 
 // ==========================================
-// 3. MIDDLEWARES GERAIS
+// 3. MIDDLEWARES PARA AS DEMAIS ROTAS
 // ==========================================
 app.use(express.json());
 
 // ==========================================
-// 4. ROTA DE CRIAÇÃO DO CHECKOUT
+// 4. ROTAS DE CRIAÇÃO (CHECKOUT)
 // ==========================================
+
+// 4.1 STRIPE EMBEDDED
 app.post('/api/checkout-stripe-embedded', async (req, res) => {
   const { userId, planType = 'mensal' } = req.body;
-
-  console.log(`[Stripe Embedded] Criando intenção [${planType.toUpperCase()}] para o UID: ${userId}`);
-
-  let priceId = process.env.STRIPE_PRICE_MENSAL;
-  if (planType.toLowerCase() === 'anual') {
-    priceId = process.env.STRIPE_PRICE_ANUAL;
-  }
+  let priceId = planType.toLowerCase() === 'anual' ? process.env.STRIPE_PRICE_ANUAL : process.env.STRIPE_PRICE_MENSAL;
 
   try {
-    if (!process.env.STRIPE_SECRET_KEY || !priceId) {
-      return res.status(500).json(["Configurações do Stripe ausentes."]);
-    }
-
     const session = await stripe.checkout.sessions.create({
       ui_mode: 'embedded_page',
       mode: 'subscription',
       payment_method_types: ['card'],
-      line_items: [
-        {
-          price: priceId,
-          quantity: 1,
-        },
-      ],
-return_url: `medwise://medwise2.com/Home`,
-      metadata: {
-        userId: userId,
-        planType: planType.toUpperCase()
-      },
+      line_items: [{ price: priceId, quantity: 1 }],
+      return_url: `medwise://medwise2.com/Home`,
+      metadata: { userId, planType: planType.toUpperCase() },
     });
-
-    console.log(`[Stripe Embedded] Sessão criada! Secret: ${session.client_secret.substring(0, 10)}...`);
-
-    return res.json([{
-      success: true,
-      client_secret: session.client_secret
-    }]);
-
+    return res.json([session.client_secret]);
   } catch (error) {
-    console.error('[Erro no Stripe Embedded]:', error.message);
-    return res.status(500).json(["Erro ao criar sessão embedded no Stripe"]);
+    return res.status(500).json(["erro_criacao_sessao"]);
   }
 });
-// ==========================================
-// 4B. ROTA DO PORTAL DE GERENCIAMENTO (STRIPE PORTAL)
-// ==========================================
-app.post('/api/stripe-portal', async (req, res) => {
-  const { userId } = req.body;
 
-  if (!userId) {
-    return res.status(400).json(["O userId é obrigatório."]);
-  }
+// 4.2 WOOVI (PIX AUTOMÁTICO)
+app.post('/api/checkout-woovi', async (req, res) => {
+  const { userId, planType = 'mensal', userCpf, userName } = req.body;
+  // A API da Woovi exige valor em centavos e dados do cliente para Pix Automático
+  const value = planType.toLowerCase() === 'anual' ? 49900 : 4990; 
 
   try {
-    if (!db) {
-      return res.status(500).json(["Banco de dados indisponível."]);
-    }
-
-    // 1. Busca o documento do usuário no Firebase para pegar o ID da Stripe
-    const userDoc = await db.collection('user').doc(userId).get();
-
-    if (!userDoc.exists) {
-      return res.status(404).json(["Usuário não encontrado no banco de dados."]);
-    }
-
-    const userData = userDoc.data();
-    const customerId = userData.stripeCustomerId;
-
-    // Se o usuário nunca comprou nada, ele não tem esse ID ainda
-    if (!customerId) {
-      return res.status(400).json(["Este usuário não possui uma assinatura ativa ou histórico no cartão."]);
-    }
-
-    // 2. Cria a sessão do Portal da Stripe
-    const portalSession = await stripe.billingPortal.sessions.create({
-      customer: customerId,
-      return_url: 'medwise://home', // Link profundo que joga o usuário de volta pro app ao sair
+    const response = await fetch('https://api.woovi.com/api/v1/subscriptions', {
+      method: 'POST',
+      headers: {
+        'Authorization': process.env.WOOVI_APP_ID,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        value: value,
+        customer: { name: userName, taxID: userCpf },
+        metadata: { userId, planType: planType.toUpperCase() }
+      })
     });
 
-    console.log(`[Stripe Portal] Link gerado para o UID: ${userId}`);
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error);
 
-    // Retorna no formato de lista com objeto que o FlutterFlow adora ler
-    return res.json([{
-      success: true,
-      url: portalSession.url
-    }]);
-
+    // Retorna o link de pagamento/aprovação do Pix Automático
+    return res.json([data.subscription.paymentLink]); 
   } catch (error) {
-    console.error('[Erro no Stripe Portal]:', error.message);
-    return res.status(500).json(["Erro ao gerar link do portal de gerenciamento."]);
+    console.error('[Erro Woovi Checkout]:', error.message);
+    return res.status(500).json(["erro_criacao_woovi"]);
   }
 });
+
 // ==========================================
-// 5. INICIALIZAÇÃO DO SERVIDOR
+// 5. WEBHOOK DA WOOVI
+// ==========================================
+app.post('/api/webhook/woovi', async (req, res) => {
+  const evento = req.body.event;
+  const charge = req.body.charge;
+
+  // Quando o Pix da assinatura é pago com sucesso
+  if (evento === 'OPENPIX:CHARGE_COMPLETED' && charge.subscription) {
+    const userId = charge.metadata.userId;
+    const planType = charge.metadata.planType;
+    const subId = charge.subscription;
+
+    try {
+      const updateUser = db.collection('user').doc(userId).set({
+        planoAtivo: planType,
+        statusAssinatura: 'ativa',
+        gateway: 'woovi',
+        wooviSubscriptionId: subId,
+        dataAtualizacao: admin.firestore.FieldValue.serverTimestamp()
+      }, { merge: true });
+
+      const createAssinatura = db.collection('assinaturas').doc(subId).set({
+        userId, plano: planType, status: 'ativa', gateway: 'woovi', wooviSubscriptionId: subId,
+        criadoEm: admin.firestore.FieldValue.serverTimestamp()
+      }, { merge: true });
+
+      const createPagamento = db.collection('pagamentos').doc(charge.correlationID).set({
+        userId, plano: planType, valor: charge.value / 100, moeda: 'BRL', statusPagamento: 'paid', gateway: 'woovi',
+        dataPagamento: admin.firestore.FieldValue.serverTimestamp()
+      }, { merge: true });
+
+      await Promise.all([updateUser, createAssinatura, createPagamento]);
+    } catch (error) {
+      console.error(`[Erro Firebase Woovi]:`, error.message);
+    }
+  }
+  res.status(200).json(["recebido"]);
+});
+
+// ==========================================
+// 6. ORQUESTRADOR: GERENCIAMENTO E CANCELAMENTO
+// ==========================================
+
+// 6.1 Rota Unificada de Portal
+app.post('/api/gerenciar-assinatura', async (req, res) => {
+  const { userId } = req.body;
+
+  try {
+    const userDoc = await db.collection('user').doc(userId).get();
+    if (!userDoc.exists) return res.status(404).json(["erro_usuario_nao_encontrado"]);
+    
+    const userData = userDoc.data();
+
+    if (userData.gateway === 'stripe') {
+      const portalSession = await stripe.billingPortal.sessions.create({
+        customer: userData.stripeCustomerId,
+        return_url: 'medwise://home', 
+      });
+      return res.json([portalSession.url]);
+    } 
+    
+    if (userData.gateway === 'woovi') {
+      // Woovi não tem um "portal web". O app vai ler essa string e exibir apenas o botão de cancelar tela
+      return res.json(["gateway_woovi"]); 
+    }
+
+    return res.status(400).json(["erro_sem_assinatura"]);
+  } catch (error) {
+    return res.status(500).json(["erro_gerar_portal"]);
+  }
+});
+
+// 6.2 Rota Unificada de Cancelamento
+app.post('/api/cancelar-assinatura', async (req, res) => {
+  const { userId } = req.body;
+
+  try {
+    const userDoc = await db.collection('user').doc(userId).get();
+    const userData = userDoc.data();
+
+    if (userData.gateway === 'stripe' && userData.stripeSubscriptionId) {
+      await stripe.subscriptions.cancel(userData.stripeSubscriptionId);
+    } 
+    else if (userData.gateway === 'woovi' && userData.wooviSubscriptionId) {
+      const response = await fetch(`https://api.woovi.com/api/v1/subscriptions/${userData.wooviSubscriptionId}/cancel`, {
+        method: 'PUT',
+        headers: { 'Authorization': process.env.WOOVI_APP_ID }
+      });
+      if (!response.ok) throw new Error("Falha na Woovi");
+    }
+
+    // Atualiza o Firebase para rebaixar o usuário
+    await db.collection('user').doc(userId).update({
+      statusAssinatura: 'cancelada',
+      planoAtivo: 'gratuito'
+    });
+
+    return res.json(["cancelamento_efetuado"]);
+
+  } catch (error) {
+    console.error('[Erro Cancelamento]:', error.message);
+    return res.status(500).json(["erro_ao_cancelar"]);
+  }
+});
+
+// ==========================================
+// 7. INICIALIZAÇÃO DO SERVIDOR
 // ==========================================
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
