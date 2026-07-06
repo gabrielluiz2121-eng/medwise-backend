@@ -126,7 +126,7 @@ app.post('/api/checkout-stripe-embedded', async (req, res) => {
   }
 });
 
-// 5.2 WOOVI (PIX AUTOMÁTICO - PAYLOAD MINIMALISTA)
+// 5.2 WOOVI (PIX AUTOMÁTICO - PAYLOAD MINIMALISTA CORRIGIDO)
 app.post('/api/checkout-woovi', async (req, res) => {
   const { userId, planType = 'mensal', userCpf, userName } = req.body;
   const value = planType.toLowerCase() === 'anual' ? 49900 : 4990; 
@@ -135,11 +135,15 @@ app.post('/api/checkout-woovi', async (req, res) => {
     // Limpa o CPF para ter certeza de que só vão números
     const cpfLimpo = userCpf.replace(/\D/g, '');
 
-    const payloadMinimalista = {
+    const payloadCorrigido = {
       value: value,
-      type: "PIX_RECURRING", // O gatilho do Pix Automático
-      dayGenerateCharge: new Date().getDate(), // Dia atual
-      dayDue: 5, // Prazo de pagamento em dias (dentro do limite de 7)
+      type: "PIX_RECURRING", 
+      dayGenerateCharge: new Date().getDate(), 
+      dayDue: 5, 
+      pixRecurringOptions: { 
+        journey: "PAYMENT_ON_APPROVAL", 
+        retryPolicy: "NON_PERMITED" 
+      },
       customer: { 
         name: userName, 
         taxID: cpfLimpo
@@ -156,7 +160,7 @@ app.post('/api/checkout-woovi', async (req, res) => {
         'Authorization': process.env.WOOVI_APP_ID,
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify(payloadMinimalista)
+      body: JSON.stringify(payloadCorrigido)
     });
 
     const data = await response.json();
