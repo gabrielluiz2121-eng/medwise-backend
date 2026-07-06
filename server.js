@@ -143,8 +143,8 @@ app.post('/api/checkout-woovi', async (req, res) => {
         value: value,
         type: "PIX_RECURRING", // <-- Define como o verdadeiro Pix Automático
         frequency: frequencia,
-        dayGenerateCharge: 10, // O sistema sempre vai gerar a cobrança no dia 10
-        dayDue: 15,            // O cliente tem até o dia 15 para pagar ou o sistema cancela a tentativa do mês
+       dayGenerateCharge: new Date().getDate(), // Obrigatoriamente o dia atual para o Pix Automático na hora
+        dayDue: 5, // Prazo de pagamento de 5 dias (respeitando o limite máximo de 7)           // O cliente tem até o dia 15 para pagar ou o sistema cancela a tentativa do mês
         pixRecurringOptions: { 
           journey: "PAYMENT_ON_APPROVAL", // Exige que o banco cobre/crie o contrato no ato da aprovação
           retryPolicy: "NON_PERMITED" 
