@@ -129,7 +129,7 @@ app.post('/api/checkout-stripe-embedded', async (req, res) => {
 // 5.2 WOOVI (PIX AUTOMÁTICO - PAYLOAD MINIMALISTA CORRIGIDO)
 app.post('/api/checkout-woovi', async (req, res) => {
   const { userId, planType = 'mensal', userCpf, userName } = req.body;
-  const value = planType.toLowerCase() === 'anual' ? 49900 : 4990; 
+  const value = planType.toLowerCase() === 'anual' ? 49 : 49; 
 
   try {
     // Limpa o CPF para ter certeza de que só vão números
