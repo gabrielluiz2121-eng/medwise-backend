@@ -126,7 +126,7 @@ app.post('/api/checkout-stripe-embedded', async (req, res) => {
   }
 });
 
-// 5.2 WOOVI (PIX AUTOMÁTICO - PAYLOAD APROVADO PELO PROVEDOR)
+// 5.2 WOOVI (PIX AUTOMÁTICO - CLONE DO MODELO DE SUCESSO)
 app.post('/api/checkout-woovi', async (req, res) => {
   const { userId, planType = 'mensal', userCpf, userName } = req.body;
   const value = planType.toLowerCase() === 'anual' ? 49900 : 4990; 
@@ -135,40 +135,41 @@ app.post('/api/checkout-woovi', async (req, res) => {
   try {
     const cpfLimpo = userCpf.replace(/\D/g, '');
 
-    // Calcula a data segura (4 dias no futuro para respeitar a regra do ONLY_RECURRENCY)
+    // Calcula a data segura (mínimo de 3 dias no futuro para o ONLY_RECURRENCY)
     const dataFutura = new Date();
     dataFutura.setDate(dataFutura.getDate() + 4);
     
-    // Trava o dia máximo em 28 para evitar erros em meses curtos (como fevereiro)
     let diaSeguro = dataFutura.getDate();
-    if (diaSeguro > 28) {
-      diaSeguro = 28;
-    }
+    if (diaSeguro > 28) diaSeguro = 28;
 
-    const payloadAprovado = {
+    const payloadClone = {
+      name: "Assinatura MedWise", // Campo que existia no seu teste
       value: value,
+      customer: { 
+        name: userName, 
+        taxID: cpfLimpo,
+        email: "contato@medwise.app.br", // Do teste
+        phone: "5511999999999",          // Do teste
+        address: {                       // Endereço exato do seu teste
+          zipcode: "04556300",
+          street: "rua de são paulo",
+          number: "3432",
+          neighborhood: "BROOKLIN PAULISTA",
+          city: "SAO PAULO",
+          state: "SP",
+          complement: "CONJ 26" // O complemento estava no seu teste e não no nosso
+        }
+      },
+      correlationID: `sub_${userId}_${Date.now()}`, // Identificador único (evita bloqueio antifraude)
+      comment: "Assinatura do aplicativo", // Campo que existia no seu teste
+      frequency: frequencia,
       type: "PIX_RECURRING",
-      frequency: frequencia, 
-      dayGenerateCharge: diaSeguro, // Agora vai sempre respeitar a carência mínima!
-      dayDue: 5, 
       pixRecurringOptions: { 
         journey: "ONLY_RECURRENCY", 
         retryPolicy: "NON_PERMITED" 
       },
-      customer: { 
-        name: userName, 
-        taxID: cpfLimpo,
-        email: "medico@medwise.app.br", 
-        phone: "5511999999999",         
-        address: {                      
-          zipcode: "04556300",
-          street: "Rua Genérica",
-          number: "100",
-          neighborhood: "Centro",
-          city: "São Paulo",
-          state: "SP"
-        }
-      },
+      dayGenerateCharge: diaSeguro, 
+      dayDue: 3, // Exatamente igual ao seu teste
       metadata: { 
         userId: userId, 
         planType: planType.toUpperCase() 
@@ -181,7 +182,7 @@ app.post('/api/checkout-woovi', async (req, res) => {
         'Authorization': process.env.WOOVI_APP_ID,
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify(payloadAprovado)
+      body: JSON.stringify(payloadClone)
     });
 
     const data = await response.json();
