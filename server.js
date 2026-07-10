@@ -135,22 +135,32 @@ app.post('/api/checkout-woovi', async (req, res) => {
   try {
     const cpfLimpo = userCpf.replace(/\D/g, '');
 
+    // Calcula a data segura (4 dias no futuro para respeitar a regra do ONLY_RECURRENCY)
+    const dataFutura = new Date();
+    dataFutura.setDate(dataFutura.getDate() + 4);
+    
+    // Trava o dia máximo em 28 para evitar erros em meses curtos (como fevereiro)
+    let diaSeguro = dataFutura.getDate();
+    if (diaSeguro > 28) {
+      diaSeguro = 28;
+    }
+
     const payloadAprovado = {
       value: value,
       type: "PIX_RECURRING",
       frequency: frequencia, 
-      dayGenerateCharge: new Date().getDate(), // Mantém o dia atual para gerar a fatura
+      dayGenerateCharge: diaSeguro, // Agora vai sempre respeitar a carência mínima!
       dayDue: 5, 
       pixRecurringOptions: { 
-        journey: "ONLY_RECURRENCY", // A chave do sucesso: Agendamento da recorrência
+        journey: "ONLY_RECURRENCY", 
         retryPolicy: "NON_PERMITED" 
       },
       customer: { 
         name: userName, 
         taxID: cpfLimpo,
-        email: "medico@medwise.app.br", // Exigência antifraude
-        phone: "5511999999999",         // Exigência antifraude
-        address: {                      // Exigência antifraude
+        email: "medico@medwise.app.br", 
+        phone: "5511999999999",         
+        address: {                      
           zipcode: "04556300",
           street: "Rua Genérica",
           number: "100",
