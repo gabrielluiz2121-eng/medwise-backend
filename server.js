@@ -192,9 +192,7 @@ app.post('/api/checkout-woovi', async (req, res) => {
       throw new Error(data.error || "Falha ao comunicar com a Woovi");
     }
 
-    return res.json([{
-      paymentLink: data.subscription.paymentLink 
-    }]); 
+return res.json([ data.subscription.paymentLinkUrl ]);
 
   } catch (error) {
     console.error('[Erro Woovi Checkout]:', error.message);
