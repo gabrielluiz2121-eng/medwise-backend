@@ -126,50 +126,48 @@ app.post('/api/checkout-stripe-embedded', async (req, res) => {
   }
 });
 
-// 5.2 WOOVI (PIX AUTOMÁTICO - CLONE DO MODELO DE SUCESSO)
+// 5.2 WOOVI (PIX AUTOMÁTICO - COBRANÇA IMEDIATA)
 app.post('/api/checkout-woovi', async (req, res) => {
   const { userId, planType = 'mensal', userCpf, userName } = req.body;
-  const value = planType.toLowerCase() === 'anual' ? 49900 : 4990; 
+  const value = planType.toLowerCase() === 'anual' ? 19990 : 1990; 
   const frequencia = planType.toLowerCase() === 'anual' ? 'YEARLY' : 'MONTHLY';
 
   try {
     const cpfLimpo = userCpf.replace(/\D/g, '');
 
-    // Calcula a data segura (mínimo de 3 dias no futuro para o ONLY_RECURRENCY)
-    const dataFutura = new Date();
-    dataFutura.setDate(dataFutura.getDate() + 4);
-    
-    let diaSeguro = dataFutura.getDate();
-    if (diaSeguro > 28) diaSeguro = 28;
+    // Para pagamento imediato (PAYMENT_ON_APPROVAL), a primeira cobrança roda na hora.
+    // O dia atual define em qual dia do mês as próximas parcelas vão vencer.
+    let diaAtual = new Date().getDate();
+    if (diaAtual > 28) diaAtual = 28; // Trava de segurança para meses curtos
 
-    const payloadClone = {
-      name: "Assinatura MedWise", // Campo que existia no seu teste
+    const payloadImediato = {
+      name: "Assinatura MedWise",
       value: value,
       customer: { 
         name: userName, 
         taxID: cpfLimpo,
-        email: "contato@medwise.app.br", // Do teste
-        phone: "5511999999999",          // Do teste
-        address: {                       // Endereço exato do seu teste
+        email: "contato@medwise.app.br",
+        phone: "5511999999999",
+        address: {
           zipcode: "04556300",
           street: "rua de são paulo",
           number: "3432",
           neighborhood: "BROOKLIN PAULISTA",
           city: "SAO PAULO",
           state: "SP",
-          complement: "CONJ 26" // O complemento estava no seu teste e não no nosso
+          complement: "CONJ 26"
         }
       },
-      correlationID: `sub_${userId}_${Date.now()}`, // Identificador único (evita bloqueio antifraude)
-      comment: "Assinatura do aplicativo", // Campo que existia no seu teste
+      correlationID: `sub_${userId}_${Date.now()}`,
+      comment: "Assinatura com liberação imediata",
       frequency: frequencia,
       type: "PIX_RECURRING",
       pixRecurringOptions: { 
-        journey: "ONLY_RECURRENCY", 
+        journey: "PAYMENT_ON_APPROVAL", // <-- ALTERADO: Força o banco a cobrar na hora da assinatura!
         retryPolicy: "NON_PERMITED" 
       },
-      dayGenerateCharge: diaSeguro, 
-      dayDue: 3, // Exatamente igual ao seu teste
+      dayGenerateCharge: diaAtual, // Define o dia da recorrência para os meses seguintes
+      dayDue: 3,
       metadata: { 
         userId: userId, 
         planType: planType.toUpperCase() 
@@ -182,7 +180,7 @@ app.post('/api/checkout-woovi', async (req, res) => {
         'Authorization': process.env.WOOVI_APP_ID,
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify(payloadClone)
+      body: JSON.stringify(payloadImediato)
     });
 
     const data = await response.json();
@@ -192,7 +190,8 @@ app.post('/api/checkout-woovi', async (req, res) => {
       throw new Error(data.error || "Falha ao comunicar com a Woovi");
     }
 
-return res.json([ data.subscription.pixRecurring.emv ]);
+    // Retorna o código EMV do Pix para o FlutterFlow gerar o QR Code na tela
+    return res.json([ data.subscription.pixRecurring.emv ]); 
 
   } catch (error) {
     console.error('[Erro Woovi Checkout]:', error.message);
