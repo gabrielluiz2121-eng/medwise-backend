@@ -159,7 +159,7 @@ app.post('/api/checkout-woovi', async (req, res) => {
         }
       },
       correlationID: `sub_${userId}_${Date.now()}`,
-      comment: "Assinatura com liberação imediata",
+      comment: "Assinatura",
       frequency: frequencia,
       type: "PIX_RECURRING",
       pixRecurringOptions: { 
