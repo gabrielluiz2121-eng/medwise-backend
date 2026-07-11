@@ -200,44 +200,56 @@ app.post('/api/checkout-woovi', async (req, res) => {
 });
 
 // ==========================================
-// 6. WEBHOOK DA WOOVI (CONFIRMAÇÃO DE PAGAMENTO)
+// 6. WEBHOOK DA WOOVI (PIX AUTOMÁTICO - EVENTOS OFICIAIS)
 app.post('/api/webhook/woovi', async (req, res) => {
   try {
     const webhookData = req.body;
-    
-    // Imprime o JSON inteiro no console do Railway para podermos ver o formato exato
-    console.log('[Webhook Woovi Recebido]:', JSON.stringify(webhookData, null, 2));
-
-    // Verifica qual evento a Woovi enviou
     const evento = webhookData.event;
 
-    // A Woovi costuma enviar OPENPIX:CHARGE_COMPLETED quando o Pix é pago
-    if (evento === 'OPENPIX:CHARGE_COMPLETED' || evento === 'OPENPIX:TRANSACTION_RECEIVED') {
-      
-      // Acessa os dados da cobrança que foi paga
-      const charge = webhookData.charge;
-      
-      // Verifica se a cobrança tem os nossos metadados
-      if (charge && charge.metadata && charge.metadata.userId) {
-        const userId = charge.metadata.userId;
-        const planType = charge.metadata.planType;
-        
-        console.log(`✅ [PAGAMENTO CONFIRMADO] Usuário: ${userId} | Plano: ${planType}`);
+    console.log(`[Webhook Woovi Recebido] Evento: ${evento}`);
 
-        // ==========================================
-        // AQUI ENTRARÁ A LÓGICA DE ATUALIZAR O FIREBASE
-        // ==========================================
+    // 1. EVENTOS DE SUCESSO DO PIX AUTOMÁTICO
+    // PIX_AUTOMATIC_APPROVED = O cliente aprovou o mandato no app do banco
+    // PIX_AUTOMATIC_COBR_COMPLETED = O dinheiro da mensalidade caiu na conta
+    if (evento === 'PIX_AUTOMATIC_APPROVED' || evento === 'PIX_AUTOMATIC_COBR_COMPLETED') {
+      
+      // Busca os dados dentro do objeto correto do Pix Automático
+      const dados = webhookData.pixAutomaticCobr || webhookData.pixAutomatic;
+      
+      if (dados && dados.metadata && dados.metadata.userId) {
+        const userId = dados.metadata.userId;
+        const planType = dados.metadata.planType;
         
+        console.log(`✅ [ACESSO LIBERADO] Usuário: ${userId} | Plano: ${planType} | Motivo: ${evento}`);
+        
+        // ==========================================
+        // CÓDIGO FIREBASE: bancoDeDados.usuarios.documento(userId).atualizar({ planoAtivo: true })
+        // ==========================================
       }
     }
 
-    // REGRA DE OURO DOS WEBHOOKS: Sempre responda 200 OK rapidamente, 
-    // senão a Woovi vai achar que deu erro e ficará reenviando a mesma mensagem.
-    return res.status(200).send('Webhook processado com sucesso');
+    // 2. EVENTOS DE FALHA OU CANCELAMENTO DO PIX AUTOMÁTICO
+    else if (evento === 'PIX_AUTOMATIC_REJECTED' || evento === 'PIX_AUTOMATIC_CANCELED' || evento === 'PIX_AUTOMATIC_COBR_REJECTED') {
+      
+      const dados = webhookData.pixAutomaticCobr || webhookData.pixAutomatic;
+      
+      if (dados && dados.metadata && dados.metadata.userId) {
+        const userId = dados.metadata.userId;
+        
+        console.log(`❌ [ACESSO BLOQUEADO] Usuário: ${userId} | Motivo: ${evento}`);
+        
+        // ==========================================
+        // CÓDIGO FIREBASE: bancoDeDados.usuarios.documento(userId).atualizar({ planoAtivo: false })
+        // ==========================================
+      }
+    }
+
+    // Retorna 200 OK para a Woovi saber que a mensagem foi recebida com sucesso
+    return res.status(200).send('Webhook processado');
 
   } catch (error) {
     console.error('[Erro no Webhook Woovi]:', error.message);
-    return res.status(500).send('Erro interno no servidor');
+    return res.status(500).send('Erro interno');
   }
 });
 
