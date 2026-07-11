@@ -200,51 +200,40 @@ app.post('/api/checkout-woovi', async (req, res) => {
 });
 
 // ==========================================
-// 6. WEBHOOK DA WOOVI (PIX AUTOMÁTICO - EVENTOS OFICIAIS)
+// 6. WEBHOOK DA WOOVI (PIX AUTOMÁTICO - CORREÇÃO DO PAYLOAD REAL)
 app.post('/api/webhook/woovi', async (req, res) => {
   try {
     const webhookData = req.body;
     const evento = webhookData.event;
+    
+    // Captura o correlationID que enviamos na criação (Ex: sub_IDDOUSUARIO_123456)
+    const correlationID = webhookData.correlationID;
 
-    console.log(`[Webhook Woovi Recebido] Evento: ${evento}`);
+    // Verifica se o correlationID existe e se fomos nós que criamos (começa com "sub_")
+    if (correlationID && correlationID.startsWith('sub_')) {
+      
+      // Divide o texto nos "anderlines" (_) e pega a parte do meio (posição 1)
+      const partes = correlationID.split('_');
+      const userId = partes[1]; 
 
-    // 1. EVENTOS DE SUCESSO DO PIX AUTOMÁTICO
-    // PIX_AUTOMATIC_APPROVED = O cliente aprovou o mandato no app do banco
-    // PIX_AUTOMATIC_COBR_COMPLETED = O dinheiro da mensalidade caiu na conta
-    if (evento === 'PIX_AUTOMATIC_APPROVED' || evento === 'PIX_AUTOMATIC_COBR_COMPLETED') {
-      
-      // Busca os dados dentro do objeto correto do Pix Automático
-      const dados = webhookData.pixAutomaticCobr || webhookData.pixAutomatic;
-      
-      if (dados && dados.metadata && dados.metadata.userId) {
-        const userId = dados.metadata.userId;
-        const planType = dados.metadata.planType;
-        
-        console.log(`✅ [ACESSO LIBERADO] Usuário: ${userId} | Plano: ${planType} | Motivo: ${evento}`);
+      if (evento === 'PIX_AUTOMATIC_APPROVED' || evento === 'PIX_AUTOMATIC_COBR_COMPLETED') {
+        console.log(`✅ [ACESSO LIBERADO] Usuário encontrado: ${userId} | Motivo: ${evento}`);
         
         // ==========================================
-        // CÓDIGO FIREBASE: bancoDeDados.usuarios.documento(userId).atualizar({ planoAtivo: true })
+        // O CÓDIGO DO FIREBASE ENTRARÁ AQUI
         // ==========================================
-      }
-    }
 
-    // 2. EVENTOS DE FALHA OU CANCELAMENTO DO PIX AUTOMÁTICO
-    else if (evento === 'PIX_AUTOMATIC_REJECTED' || evento === 'PIX_AUTOMATIC_CANCELED' || evento === 'PIX_AUTOMATIC_COBR_REJECTED') {
-      
-      const dados = webhookData.pixAutomaticCobr || webhookData.pixAutomatic;
-      
-      if (dados && dados.metadata && dados.metadata.userId) {
-        const userId = dados.metadata.userId;
-        
-        console.log(`❌ [ACESSO BLOQUEADO] Usuário: ${userId} | Motivo: ${evento}`);
+      } else if (evento === 'PIX_AUTOMATIC_REJECTED' || evento === 'PIX_AUTOMATIC_CANCELED' || evento === 'PIX_AUTOMATIC_COBR_REJECTED') {
+        console.log(`❌ [ACESSO BLOQUEADO] Usuário encontrado: ${userId} | Motivo: ${evento}`);
         
         // ==========================================
-        // CÓDIGO FIREBASE: bancoDeDados.usuarios.documento(userId).atualizar({ planoAtivo: false })
+        // O CÓDIGO DO FIREBASE ENTRARÁ AQUI
         // ==========================================
       }
+    } else {
+      console.log(`⚠️ [Aviso] Webhook recebido sem correlationID rastreável.`);
     }
 
-    // Retorna 200 OK para a Woovi saber que a mensagem foi recebida com sucesso
     return res.status(200).send('Webhook processado');
 
   } catch (error) {
