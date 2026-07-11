@@ -200,51 +200,45 @@ app.post('/api/checkout-woovi', async (req, res) => {
 });
 
 // ==========================================
-// 6. WEBHOOK DA WOOVI
-// ==========================================
+// 6. WEBHOOK DA WOOVI (CONFIRMAÇÃO DE PAGAMENTO)
 app.post('/api/webhook/woovi', async (req, res) => {
-  const evento = req.body.event;
-  const charge = req.body.charge;
+  try {
+    const webhookData = req.body;
+    
+    // Imprime o JSON inteiro no console do Railway para podermos ver o formato exato
+    console.log('[Webhook Woovi Recebido]:', JSON.stringify(webhookData, null, 2));
 
-  if (evento === 'OPENPIX:CHARGE_COMPLETED' && charge.subscription) {
-    const userId = charge.metadata.userId;
-    const planType = charge.metadata.planType;
-    const subId = charge.subscription;
+    // Verifica qual evento a Woovi enviou
+    const evento = webhookData.event;
 
-    try {
-      const updateUser = db.collection('user').doc(userId).set({
-        planoAtivo: planType,
-        statusAssinatura: 'ativa',
-        gateway: 'woovi',
-        wooviSubscriptionId: subId,
-        dataAtualizacao: admin.firestore.FieldValue.serverTimestamp()
-      }, { merge: true });
+    // A Woovi costuma enviar OPENPIX:CHARGE_COMPLETED quando o Pix é pago
+    if (evento === 'OPENPIX:CHARGE_COMPLETED' || evento === 'OPENPIX:TRANSACTION_RECEIVED') {
+      
+      // Acessa os dados da cobrança que foi paga
+      const charge = webhookData.charge;
+      
+      // Verifica se a cobrança tem os nossos metadados
+      if (charge && charge.metadata && charge.metadata.userId) {
+        const userId = charge.metadata.userId;
+        const planType = charge.metadata.planType;
+        
+        console.log(`✅ [PAGAMENTO CONFIRMADO] Usuário: ${userId} | Plano: ${planType}`);
 
-      const createAssinatura = db.collection('assinaturas').doc(subId).set({
-        userId: userId, 
-        plano: planType, 
-        status: 'ativa', 
-        gateway: 'woovi', 
-        wooviSubscriptionId: subId,
-        criadoEm: admin.firestore.FieldValue.serverTimestamp()
-      }, { merge: true });
-
-      const createPagamento = db.collection('pagamentos').doc(charge.correlationID).set({
-        userId: userId, 
-        plano: planType, 
-        valor: charge.value / 100, 
-        moeda: 'BRL', 
-        statusPagamento: 'paid', 
-        gateway: 'woovi',
-        dataPagamento: admin.firestore.FieldValue.serverTimestamp()
-      }, { merge: true });
-
-      await Promise.all([updateUser, createAssinatura, createPagamento]);
-    } catch (error) {
-      console.error(`[Erro Firebase Woovi]:`, error.message);
+        // ==========================================
+        // AQUI ENTRARÁ A LÓGICA DE ATUALIZAR O FIREBASE
+        // ==========================================
+        
+      }
     }
+
+    // REGRA DE OURO DOS WEBHOOKS: Sempre responda 200 OK rapidamente, 
+    // senão a Woovi vai achar que deu erro e ficará reenviando a mesma mensagem.
+    return res.status(200).send('Webhook processado com sucesso');
+
+  } catch (error) {
+    console.error('[Erro no Webhook Woovi]:', error.message);
+    return res.status(500).send('Erro interno no servidor');
   }
-  res.status(200).json([{ received: true }]);
 });
 
 // ==========================================
