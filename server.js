@@ -115,6 +115,11 @@ app.post('/api/checkout-stripe-embedded', async (req, res) => {
       line_items: [{ price: priceId, quantity: 1 }],
       return_url: `medwise://medwise2.com/Home`,
       metadata: { userId, planType: planType.toUpperCase() },
+      subscription_data: {
+    metadata: {
+      userId: userId  // <-- ISSO É O QUE FALTA! Garante que o webhook saiba quem é.
+    }
+  },
     });
     
     return res.json([{
@@ -200,42 +205,53 @@ app.post('/api/checkout-woovi', async (req, res) => {
 });
 
 // ==========================================
-// 6. WEBHOOK DA WOOVI (PIX AUTOMÁTICO - CORREÇÃO DO PAYLOAD REAL)
+// 6. WEBHOOK DA WOOVI (COM ATUALIZAÇÃO NO FIREBASE)
 app.post('/api/webhook/woovi', async (req, res) => {
   try {
     const webhookData = req.body;
     const evento = webhookData.event;
-    
-    // Captura o correlationID que enviamos na criação (Ex: sub_IDDOUSUARIO_123456)
     const correlationID = webhookData.correlationID;
 
-    // Verifica se o correlationID existe e se fomos nós que criamos (começa com "sub_")
     if (correlationID && correlationID.startsWith('sub_')) {
-      
-      // Divide o texto nos "anderlines" (_) e pega a parte do meio (posição 1)
       const partes = correlationID.split('_');
       const userId = partes[1]; 
+      
+      // Assume que o plano é MENSAL se não vier (podemos extrair de outro lugar se necessário)
+      const planType = "MENSAL"; 
 
       if (evento === 'PIX_AUTOMATIC_APPROVED' || evento === 'PIX_AUTOMATIC_COBR_COMPLETED') {
-        console.log(`✅ [ACESSO LIBERADO] Usuário encontrado: ${userId} | Motivo: ${evento}`);
+        console.log(`✅ [ACESSO LIBERADO] Usuário: ${userId} | Woovi`);
         
-        // ==========================================
-        // O CÓDIGO DO FIREBASE ENTRARÁ AQUI
-        // ==========================================
+        // CÓDIGO REAL DO FIREBASE PARA SUCESSO:
+        // Cria ou atualiza o documento na coleção 'assinaturas'
+        await db.collection('assinaturas').doc(correlationID).set({
+          criadoEm: admin.firestore.FieldValue.serverTimestamp(),
+          gateway: "woovi",
+          plano: planType,
+          status: "ativa",
+          wooviCorrelationId: correlationID,
+          userId: userId // Agora o ID real vai aparecer aqui!
+        }, { merge: true });
+
+        // DICA EXTRA: Se você tiver uma coleção 'users', você pode ativar o plano lá também:
+        // await db.collection('users').doc(userId).update({ isPremium: true });
 
       } else if (evento === 'PIX_AUTOMATIC_REJECTED' || evento === 'PIX_AUTOMATIC_CANCELED' || evento === 'PIX_AUTOMATIC_COBR_REJECTED') {
-        console.log(`❌ [ACESSO BLOQUEADO] Usuário encontrado: ${userId} | Motivo: ${evento}`);
+        console.log(`❌ [ACESSO BLOQUEADO] Usuário: ${userId} | Woovi`);
         
-        // ==========================================
-        // O CÓDIGO DO FIREBASE ENTRARÁ AQUI
-        // ==========================================
+        // CÓDIGO REAL DO FIREBASE PARA CANCELAMENTO:
+        await db.collection('assinaturas').doc(correlationID).set({
+          status: "cancelada_ou_falha",
+          atualizadoEm: admin.firestore.FieldValue.serverTimestamp()
+        }, { merge: true });
+        
+        // await db.collection('users').doc(userId).update({ isPremium: false });
       }
     } else {
-      console.log(`⚠️ [Aviso] Webhook recebido sem correlationID rastreável.`);
+      console.log(`⚠️ Webhook recebido sem correlationID válido.`);
     }
 
     return res.status(200).send('Webhook processado');
-
   } catch (error) {
     console.error('[Erro no Webhook Woovi]:', error.message);
     return res.status(500).send('Erro interno');
