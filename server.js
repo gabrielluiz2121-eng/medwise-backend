@@ -91,8 +91,49 @@ app.post('/api/webhook/stripe', express.raw({ type: 'application/json' }), async
       console.error(`[Erro Firebase Stripe Checkout]:`, error.message);
     }
   } 
-  
-  // 3.2 FALHA/CANCELAMENTO: ASSINATURA DELETADA
+  // 3.2 ATUALIZAÇÃO: TROCA DE PLANO OU STATUS
+  else if (event.type === 'customer.subscription.updated') {
+    const subscription = event.data.object;
+    const subscriptionId = subscription.id; 
+    const userId = subscription.metadata ? subscription.metadata.userId : null;
+    const statusStripe = subscription.status; // 'active', 'past_due', 'canceled', etc.
+
+    // Tenta descobrir o nome do novo plano (Mensal ou Anual)
+    let planType = "MENSAL";
+    if (subscription.plan) {
+      if (subscription.plan.nickname) {
+        planType = subscription.plan.nickname.toUpperCase();
+      } else if (subscription.plan.interval === 'year') {
+        planType = "ANUAL";
+      }
+    }
+
+    try {
+      // 1. Atualiza a coleção 'assinaturas'
+      const updateAssinatura = db.collection('assinaturas').doc(subscriptionId).update({
+        plano: planType,
+        status: statusStripe === 'active' ? 'ativa' : statusStripe,
+        atualizadoEm: admin.firestore.FieldValue.serverTimestamp()
+      });
+
+      // 2. Atualiza a coleção 'user'
+      let updateUser = Promise.resolve();
+      if (userId) {
+        updateUser = db.collection('user').doc(userId).update({
+          planoAtivo: planType,
+          statusAssinatura: statusStripe === 'active' ? 'ativa' : statusStripe,
+          dataAtualizacao: admin.firestore.FieldValue.serverTimestamp()
+        });
+      }
+
+      await Promise.all([updateAssinatura, updateUser]);
+      console.log(`🔄 [Stripe] Assinatura atualizada: ${subscriptionId} | Novo plano: ${planType}`);
+
+    } catch (error) {
+      console.error('[Erro Atualizacao Firestore Stripe]:', error.message);
+    }
+  }
+  // 3.3 FALHA/CANCELAMENTO: ASSINATURA DELETADA
   else if (event.type === 'customer.subscription.deleted') {
     const subscription = event.data.object;
     const subscriptionId = subscription.id; 
