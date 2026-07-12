@@ -17,7 +17,7 @@ try {
       credential: admin.credential.cert(serviceAccount)
     });
     db = admin.firestore();
-    console.log("Firebase Admin inicializado com sucesso!");
+    console.log("✅ Firebase Admin inicializado com sucesso!");
   }
 } catch (error) {
   console.error("🚨 ERRO CRÍTICO no Firebase Admin:", error.message);
@@ -47,12 +47,13 @@ app.post('/api/webhook/stripe', express.raw({ type: 'application/json' }), async
     return res.status(400).send(`Webhook Error: ${err.message}`);
   }
 
+  if (!db) return res.status(500).json([{ error: "erro_banco_dados" }]);
+
+  // 3.1 SUCESSO: ASSINATURA CRIADA E PAGA
   if (event.type === 'checkout.session.completed') {
     const session = event.data.object;
     const userId = session.metadata.userId;
     const planType = session.metadata.planType; 
-
-    if (!db) return res.status(500).json([{ error: "erro_banco_dados" }]);
 
     try {
       const updateUser = db.collection('user').doc(userId).set({
@@ -85,11 +86,41 @@ app.post('/api/webhook/stripe', express.raw({ type: 'application/json' }), async
       }, { merge: true });
 
       await Promise.all([updateUser, createAssinatura, createPagamento]);
-      console.log(`[Stripe] Assinatura salva para UID ${userId}`);
+      console.log(`✅ [Stripe] Assinatura salva para UID ${userId}`);
     } catch (error) {
-      console.error(`[Erro Firebase Stripe]:`, error.message);
+      console.error(`[Erro Firebase Stripe Checkout]:`, error.message);
+    }
+  } 
+  
+  // 3.2 FALHA/CANCELAMENTO: ASSINATURA DELETADA
+  else if (event.type === 'customer.subscription.deleted') {
+    const subscription = event.data.object;
+    const subscriptionId = subscription.id; 
+
+    try {
+      // 1. Atualiza o status na coleção 'assinaturas' (onde o ID do doc é o subscription.id)
+      await db.collection('assinaturas').doc(subscriptionId).update({
+        status: 'cancelada',
+        atualizadoEm: admin.firestore.FieldValue.serverTimestamp()
+      });
+      console.log(`❌ [Stripe] Assinatura cancelada na coleção 'assinaturas': ${subscriptionId}`);
+
+      // 2. Atualiza a coleção 'user' usando o userId guardado no metadata
+      const userId = subscription.metadata ? subscription.metadata.userId : null;
+      if (userId) {
+        await db.collection('user').doc(userId).update({
+          statusAssinatura: 'cancelada',
+          planoAtivo: 'gratuito',
+          dataAtualizacao: admin.firestore.FieldValue.serverTimestamp()
+        });
+        console.log(`❌ [Stripe] Usuário ${userId} rebaixado para o plano gratuito.`);
+      }
+
+    } catch (error) {
+      console.error('[Erro Cancelamento Firestore Stripe]:', error.message);
     }
   }
+
   res.status(200).json([{ received: true }]);
 });
 
@@ -116,10 +147,10 @@ app.post('/api/checkout-stripe-embedded', async (req, res) => {
       return_url: `medwise://medwise2.com/Home`,
       metadata: { userId, planType: planType.toUpperCase() },
       subscription_data: {
-    metadata: {
-      userId: userId  // <-- ISSO É O QUE FALTA! Garante que o webhook saiba quem é.
-    }
-  },
+        metadata: {
+          userId: userId  // Garante que o webhook saiba quem é no momento do cancelamento
+        }
+      },
     });
     
     return res.json([{
@@ -141,7 +172,6 @@ app.post('/api/checkout-woovi', async (req, res) => {
     const cpfLimpo = userCpf.replace(/\D/g, '');
 
     // Para pagamento imediato (PAYMENT_ON_APPROVAL), a primeira cobrança roda na hora.
-    // O dia atual define em qual dia do mês as próximas parcelas vão vencer.
     let diaAtual = new Date().getDate();
     if (diaAtual > 28) diaAtual = 28; // Trava de segurança para meses curtos
 
@@ -168,10 +198,10 @@ app.post('/api/checkout-woovi', async (req, res) => {
       frequency: frequencia,
       type: "PIX_RECURRING",
       pixRecurringOptions: { 
-        journey: "PAYMENT_ON_APPROVAL", // <-- ALTERADO: Força o banco a cobrar na hora da assinatura!
+        journey: "PAYMENT_ON_APPROVAL",
         retryPolicy: "NON_PERMITED" 
       },
-      dayGenerateCharge: diaAtual, // Define o dia da recorrência para os meses seguintes
+      dayGenerateCharge: diaAtual,
       dayDue: 3,
       metadata: { 
         userId: userId, 
@@ -195,7 +225,6 @@ app.post('/api/checkout-woovi', async (req, res) => {
       throw new Error(data.error || "Falha ao comunicar com a Woovi");
     }
 
-    // Retorna o código EMV do Pix para o FlutterFlow gerar o QR Code na tela
     return res.json([ data.subscription.pixRecurring.emv ]); 
 
   } catch (error) {
@@ -206,6 +235,7 @@ app.post('/api/checkout-woovi', async (req, res) => {
 
 // ==========================================
 // 6. WEBHOOK DA WOOVI (COM ATUALIZAÇÃO NO FIREBASE)
+// ==========================================
 app.post('/api/webhook/woovi', async (req, res) => {
   try {
     const webhookData = req.body;
@@ -216,36 +246,39 @@ app.post('/api/webhook/woovi', async (req, res) => {
       const partes = correlationID.split('_');
       const userId = partes[1]; 
       
-      // Assume que o plano é MENSAL se não vier (podemos extrair de outro lugar se necessário)
       const planType = "MENSAL"; 
 
       if (evento === 'PIX_AUTOMATIC_APPROVED' || evento === 'PIX_AUTOMATIC_COBR_COMPLETED') {
         console.log(`✅ [ACESSO LIBERADO] Usuário: ${userId} | Woovi`);
         
-        // CÓDIGO REAL DO FIREBASE PARA SUCESSO:
-        // Cria ou atualiza o documento na coleção 'assinaturas'
         await db.collection('assinaturas').doc(correlationID).set({
           criadoEm: admin.firestore.FieldValue.serverTimestamp(),
           gateway: "woovi",
           plano: planType,
           status: "ativa",
           wooviCorrelationId: correlationID,
-          userId: userId // Agora o ID real vai aparecer aqui!
+          userId: userId 
         }, { merge: true });
 
-        // DICA EXTRA: Se você tiver uma coleção 'users', você pode ativar o plano lá também:
-        // await db.collection('users').doc(userId).update({ isPremium: true });
+        await db.collection('user').doc(userId).update({ 
+          statusAssinatura: 'ativa',
+          planoAtivo: planType,
+          dataAtualizacao: admin.firestore.FieldValue.serverTimestamp()
+        });
 
       } else if (evento === 'PIX_AUTOMATIC_REJECTED' || evento === 'PIX_AUTOMATIC_CANCELED' || evento === 'PIX_AUTOMATIC_COBR_REJECTED') {
         console.log(`❌ [ACESSO BLOQUEADO] Usuário: ${userId} | Woovi`);
         
-        // CÓDIGO REAL DO FIREBASE PARA CANCELAMENTO:
         await db.collection('assinaturas').doc(correlationID).set({
           status: "cancelada_ou_falha",
           atualizadoEm: admin.firestore.FieldValue.serverTimestamp()
         }, { merge: true });
         
-        // await db.collection('users').doc(userId).update({ isPremium: false });
+        await db.collection('user').doc(userId).update({ 
+          statusAssinatura: 'cancelada',
+          planoAtivo: 'gratuito',
+          dataAtualizacao: admin.firestore.FieldValue.serverTimestamp()
+        });
       }
     } else {
       console.log(`⚠️ Webhook recebido sem correlationID válido.`);
