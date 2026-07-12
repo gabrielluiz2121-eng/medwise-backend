@@ -234,7 +234,7 @@ app.post('/api/checkout-woovi', async (req, res) => {
 });
 
 // ==========================================
-// 6. WEBHOOK DA WOOVI (COM ATUALIZAÇÃO NO FIREBASE)
+// 6. WEBHOOK DA WOOVI (COM ATUALIZAÇÃO COMPLETA NO FIREBASE)
 // ==========================================
 app.post('/api/webhook/woovi', async (req, res) => {
   try {
@@ -246,12 +246,26 @@ app.post('/api/webhook/woovi', async (req, res) => {
       const partes = correlationID.split('_');
       const userId = partes[1]; 
       
+      // Assume que o plano é MENSAL se não vier 
       const planType = "MENSAL"; 
+      
+      // A Woovi envia o valor em centavos (ex: 1990 para R$ 19,90)
+      const valorWoovi = webhookData.value ? webhookData.value / 100 : 0;
 
       if (evento === 'PIX_AUTOMATIC_APPROVED' || evento === 'PIX_AUTOMATIC_COBR_COMPLETED') {
         console.log(`✅ [ACESSO LIBERADO] Usuário: ${userId} | Woovi`);
         
-        await db.collection('assinaturas').doc(correlationID).set({
+        // 1. Atualiza a coleção 'user' (IDÊNTICO AO STRIPE)
+        const updateUser = db.collection('user').doc(userId).set({ 
+          statusAssinatura: 'ativa',
+          planoAtivo: planType,
+          gateway: 'woovi',
+          wooviSubscriptionId: correlationID, // Necessário para a rota de cancelamento!
+          dataAtualizacao: admin.firestore.FieldValue.serverTimestamp()
+        }, { merge: true });
+
+        // 2. Atualiza a coleção 'assinaturas'
+        const createAssinatura = db.collection('assinaturas').doc(correlationID).set({
           criadoEm: admin.firestore.FieldValue.serverTimestamp(),
           gateway: "woovi",
           plano: planType,
@@ -260,28 +274,42 @@ app.post('/api/webhook/woovi', async (req, res) => {
           userId: userId 
         }, { merge: true });
 
-        await db.collection('user').doc(userId).update({ 
-          statusAssinatura: 'ativa',
-          planoAtivo: planType,
-          dataAtualizacao: admin.firestore.FieldValue.serverTimestamp()
-        });
+        // 3. Cria o registro na coleção 'pagamentos'
+        // Usa o ID global da Woovi se existir, senão gera um ID único
+        const pagamentoId = webhookData.globalID || `pay_woovi_${Date.now()}`;
+        const createPagamento = db.collection('pagamentos').doc(pagamentoId).set({
+          userId: userId,
+          plano: planType,
+          valor: valorWoovi,
+          moeda: 'brl',
+          statusPagamento: evento === 'PIX_AUTOMATIC_COBR_COMPLETED' ? 'paid' : 'approved',
+          gateway: 'woovi',
+          dataPagamento: admin.firestore.FieldValue.serverTimestamp()
+        }, { merge: true });
+
+        // Executa as 3 ações no banco de dados simultaneamente
+        await Promise.all([updateUser, createAssinatura, createPagamento]);
 
       } else if (evento === 'PIX_AUTOMATIC_REJECTED' || evento === 'PIX_AUTOMATIC_CANCELED' || evento === 'PIX_AUTOMATIC_COBR_REJECTED') {
         console.log(`❌ [ACESSO BLOQUEADO] Usuário: ${userId} | Woovi`);
         
-        await db.collection('assinaturas').doc(correlationID).set({
+        // Cancela na coleção 'assinaturas'
+        const cancelAssinatura = db.collection('assinaturas').doc(correlationID).set({
           status: "cancelada_ou_falha",
           atualizadoEm: admin.firestore.FieldValue.serverTimestamp()
         }, { merge: true });
         
-        await db.collection('user').doc(userId).update({ 
+        // Cancela na coleção 'user'
+        const cancelUser = db.collection('user').doc(userId).update({ 
           statusAssinatura: 'cancelada',
           planoAtivo: 'gratuito',
           dataAtualizacao: admin.firestore.FieldValue.serverTimestamp()
         });
+
+        await Promise.all([cancelAssinatura, cancelUser]);
       }
     } else {
-      console.log(`⚠️ Webhook recebido sem correlationID válido.`);
+      console.log(`⚠️ Webhook da Woovi recebido sem correlationID válido.`);
     }
 
     return res.status(200).send('Webhook processado');
