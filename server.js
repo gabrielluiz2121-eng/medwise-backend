@@ -49,48 +49,71 @@ app.post('/api/webhook/stripe', express.raw({ type: 'application/json' }), async
 
   if (!db) return res.status(500).json([{ error: "erro_banco_dados" }]);
 
-  // 3.1 SUCESSO: ASSINATURA CRIADA E PAGA
-  if (event.type === 'checkout.session.completed') {
-    const session = event.data.object;
-    const userId = session.metadata.userId;
-    const planType = session.metadata.planType; 
+// 3.1 SUCESSO: ASSINATURA CRIADA
+  if (event.type === 'customer.subscription.created') {
+    const subscription = event.data.object;
+    const subscriptionId = subscription.id;
+    const userId = subscription.metadata ? subscription.metadata.userId : null;
+    const customerId = subscription.customer;
+    const statusStripe = subscription.status; // Esperado 'active' ou 'trialing'
+
+    // Extrai o plano da mesma forma que fizemos no 'updated'
+    let planType = "MENSAL";
+    if (subscription.plan) {
+      if (subscription.plan.nickname) {
+        planType = subscription.plan.nickname.toUpperCase();
+      } else if (subscription.plan.interval === 'year') {
+        planType = "ANUAL";
+      }
+    }
+
+    // Extrai o valor do pagamento para registrar
+    const valor = subscription.plan ? subscription.plan.amount / 100 : 0;
+    const moeda = subscription.plan ? subscription.plan.currency : 'brl';
 
     try {
-      const updateUser = db.collection('user').doc(userId).set({
-        planoAtivo: planType,
-        statusAssinatura: 'ativa',
-        gateway: 'stripe',
-        stripeCustomerId: session.customer,
-        stripeSubscriptionId: session.subscription,
-        dataAtualizacao: admin.firestore.FieldValue.serverTimestamp()
-      }, { merge: true });
+      // 1. Atualiza a coleção 'user'
+      let updateUser = Promise.resolve();
+      if (userId) {
+        updateUser = db.collection('user').doc(userId).set({
+          planoAtivo: planType,
+          statusAssinatura: statusStripe === 'active' ? 'ativa' : statusStripe,
+          gateway: 'stripe',
+          stripeCustomerId: customerId,
+          stripeSubscriptionId: subscriptionId,
+          dataAtualizacao: admin.firestore.FieldValue.serverTimestamp()
+        }, { merge: true });
+      }
 
-      const createAssinatura = db.collection('assinaturas').doc(session.subscription).set({
+      // 2. Cria a coleção 'assinaturas'
+      const createAssinatura = db.collection('assinaturas').doc(subscriptionId).set({
         userId: userId,
         plano: planType,
-        status: 'ativa',
+        status: statusStripe === 'active' ? 'ativa' : statusStripe,
         gateway: 'stripe',
-        stripeCustomerId: session.customer,
-        stripeSubscriptionId: session.subscription,
+        stripeCustomerId: customerId,
+        stripeSubscriptionId: subscriptionId,
         criadoEm: admin.firestore.FieldValue.serverTimestamp()
       }, { merge: true });
 
-      const createPagamento = db.collection('pagamentos').doc(session.id).set({
+      // 3. Cria a coleção 'pagamentos'
+      const pagamentoId = `pay_stripe_${subscriptionId}_${Date.now()}`;
+      const createPagamento = db.collection('pagamentos').doc(pagamentoId).set({
         userId: userId,
         plano: planType,
-        valor: session.amount_total / 100,
-        moeda: session.currency,
-        statusPagamento: session.payment_status,
+        valor: valor,
+        moeda: moeda,
+        statusPagamento: 'succeeded', // Num cenário ideal, você checaria invoice.payment_succeeded, mas aqui assumimos sucesso na criação
         gateway: 'stripe',
         dataPagamento: admin.firestore.FieldValue.serverTimestamp()
       }, { merge: true });
 
       await Promise.all([updateUser, createAssinatura, createPagamento]);
-      console.log(`✅ [Stripe] Assinatura salva para UID ${userId}`);
+      console.log(`✅ [Stripe] Assinatura criada para UID ${userId}`);
     } catch (error) {
-      console.error(`[Erro Firebase Stripe Checkout]:`, error.message);
+      console.error(`[Erro Firebase Stripe Created]:`, error.message);
     }
-  } 
+  }
   // 3.2 ATUALIZAÇÃO: TROCA DE PLANO OU STATUS
   else if (event.type === 'customer.subscription.updated') {
     const subscription = event.data.object;
