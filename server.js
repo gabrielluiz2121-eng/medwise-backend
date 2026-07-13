@@ -230,7 +230,7 @@ app.post('/api/checkout-stripe-embedded', async (req, res) => {
 app.post('/api/checkout-woovi', async (req, res) => {
   const { userId, planType = 'mensal', userCpf, userName } = req.body;
   const value = planType.toLowerCase() === 'anual' ? 19990 : 1990; 
-  const frequencia = planType.toLowerCase() === 'anual' ? 'YEARLY' : 'MONTHLY';
+  const frequencia = planType.toLowerCase() === 'anual' ? 'YEARLY' : 'ANNUALLY';
 
   try {
     const cpfLimpo = userCpf.replace(/\D/g, '');
