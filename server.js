@@ -454,3 +454,40 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Servidor rodando na porta ${PORT}`);
 });
+// Função genérica para enviar Push Notifications
+async function enviarPush(userId, titulo, mensagem) {
+  try {
+    // 1. Buscar o usuário no Firestore
+    const userDoc = await admin.firestore().collection('user').doc(userId).get();
+    
+    if (!userDoc.exists) {
+      console.log(`Usuário ${userId} não encontrado.`);
+      return;
+    }
+
+    const userData = userDoc.data();
+    const tokens = userData.fcm_tokens; // O FlutterFlow salva como uma lista de strings
+
+    // 2. Verificar se o usuário tem tokens válidos
+    if (!tokens || tokens.length === 0) {
+      console.log(`Usuário ${userId} não possui tokens de notificação.`);
+      return;
+    }
+
+    // 3. Montar o pacote da notificação
+    const payload = {
+      notification: {
+        title: titulo,
+        body: mensagem,
+      },
+      tokens: tokens, // Envia para todos os aparelhos do usuário
+    };
+
+    // 4. Disparar via Firebase Cloud Messaging
+    const response = await admin.messaging().sendMulticast(payload);
+    console.log(`Notificação enviada com sucesso para ${response.successCount} dispositivo(s).`);
+    
+  } catch (error) {
+    console.error('Erro ao enviar notificação:', error);
+  }
+}
