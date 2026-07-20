@@ -53,8 +53,8 @@ async function enviarPush(userId, titulo, mensagem) {
       tokens: tokens, // Envia para todos os aparelhos do usuário encontrados
     };
 
-    // 5. Disparar via Firebase Cloud Messaging
-    const response = await admin.messaging().sendMulticast(payload);
+    // 5. Disparar via Firebase Cloud Messaging usando o método atualizado
+    const response = await admin.messaging().sendEachForMulticast(payload);
     console.log(`📲 Notificação Push enviada com sucesso para ${response.successCount} dispositivo(s) do usuário ${userId}.`);
     
   } catch (error) {
