@@ -23,18 +23,54 @@ try {
   console.error("🚨 ERRO CRÍTICO no Firebase Admin:", error.message);
 }
 
+// ==========================================
+// 2. MOTOR DE NOTIFICAÇÕES (PUSH)
+// ==========================================
+async function enviarPush(userId, titulo, mensagem) {
+  try {
+    const userDoc = await admin.firestore().collection('user').doc(userId).get();
+    
+    if (!userDoc.exists) {
+      console.log(`[Push Abortado] Usuário ${userId} não encontrado.`);
+      return;
+    }
+
+    const userData = userDoc.data();
+    const tokens = userData.fcm_tokens;
+
+    if (!tokens || tokens.length === 0) {
+      console.log(`[Push Abortado] Usuário ${userId} não possui tokens de notificação.`);
+      return;
+    }
+
+    const payload = {
+      notification: {
+        title: titulo,
+        body: mensagem,
+      },
+      tokens: tokens,
+    };
+
+    const response = await admin.messaging().sendMulticast(payload);
+    console.log(`📲 Notificação Push enviada com sucesso para ${response.successCount} dispositivo(s) do usuário ${userId}.`);
+    
+  } catch (error) {
+    console.error('🚨 Erro crítico ao enviar notificação Push:', error);
+  }
+}
+
 const app = express();
 app.use(cors());
 
 // ==========================================
-// 2. HEALTH CHECK (TESTE NO NAVEGADOR)
+// 3. HEALTH CHECK (TESTE NO NAVEGADOR)
 // ==========================================
 app.get('/', (req, res) => {
   res.status(200).send('🚀 Servidor da API do MedWise está online e operacional!');
 });
 
 // ==========================================
-// 3. WEBHOOK DO STRIPE (Requer express.raw)
+// 4. WEBHOOK DO STRIPE (Requer express.raw)
 // ==========================================
 app.post('/api/webhook/stripe', express.raw({ type: 'application/json' }), async (req, res) => {
   const sig = req.headers['stripe-signature'];
@@ -49,15 +85,14 @@ app.post('/api/webhook/stripe', express.raw({ type: 'application/json' }), async
 
   if (!db) return res.status(500).json([{ error: "erro_banco_dados" }]);
 
-// 3.1 SUCESSO: ASSINATURA CRIADA
+  // 4.1 SUCESSO: ASSINATURA CRIADA
   if (event.type === 'customer.subscription.created') {
     const subscription = event.data.object;
     const subscriptionId = subscription.id;
     const userId = subscription.metadata ? subscription.metadata.userId : null;
     const customerId = subscription.customer;
-    const statusStripe = subscription.status; // Esperado 'active' ou 'trialing'
+    const statusStripe = subscription.status; 
 
-    // Extrai o plano da mesma forma que fizemos no 'updated'
     let planType = "MENSAL";
     if (subscription.plan) {
       if (subscription.plan.nickname) {
@@ -67,12 +102,10 @@ app.post('/api/webhook/stripe', express.raw({ type: 'application/json' }), async
       }
     }
 
-    // Extrai o valor do pagamento para registrar
     const valor = subscription.plan ? subscription.plan.amount / 100 : 0;
     const moeda = subscription.plan ? subscription.plan.currency : 'brl';
 
     try {
-      // 1. Atualiza a coleção 'user'
       let updateUser = Promise.resolve();
       if (userId) {
         updateUser = db.collection('user').doc(userId).set({
@@ -85,7 +118,6 @@ app.post('/api/webhook/stripe', express.raw({ type: 'application/json' }), async
         }, { merge: true });
       }
 
-      // 2. Cria a coleção 'assinaturas'
       const createAssinatura = db.collection('assinaturas').doc(subscriptionId).set({
         userId: userId,
         plano: planType,
@@ -96,32 +128,36 @@ app.post('/api/webhook/stripe', express.raw({ type: 'application/json' }), async
         criadoEm: admin.firestore.FieldValue.serverTimestamp()
       }, { merge: true });
 
-      // 3. Cria a coleção 'pagamentos'
       const pagamentoId = `pay_stripe_${subscriptionId}_${Date.now()}`;
       const createPagamento = db.collection('pagamentos').doc(pagamentoId).set({
         userId: userId,
         plano: planType,
         valor: valor,
         moeda: moeda,
-        statusPagamento: 'succeeded', // Num cenário ideal, você checaria invoice.payment_succeeded, mas aqui assumimos sucesso na criação
+        statusPagamento: 'succeeded',
         gateway: 'stripe',
         dataPagamento: admin.firestore.FieldValue.serverTimestamp()
       }, { merge: true });
 
       await Promise.all([updateUser, createAssinatura, createPagamento]);
       console.log(`✅ [Stripe] Assinatura criada para UID ${userId}`);
+      
+      // ===== DISPARO DO PUSH NOTIFICATION =====
+      if (userId) {
+        await enviarPush(userId, "Assinatura Confirmada! 🎉", "Bem-vindo ao MedWise Premium. Todos os recursos foram liberados.");
+      }
+
     } catch (error) {
       console.error(`[Erro Firebase Stripe Created]:`, error.message);
     }
   }
-  // 3.2 ATUALIZAÇÃO: TROCA DE PLANO OU STATUS
+  // 4.2 ATUALIZAÇÃO: TROCA DE PLANO OU STATUS
   else if (event.type === 'customer.subscription.updated') {
     const subscription = event.data.object;
     const subscriptionId = subscription.id; 
     const userId = subscription.metadata ? subscription.metadata.userId : null;
-    const statusStripe = subscription.status; // 'active', 'past_due', 'canceled', etc.
+    const statusStripe = subscription.status;
 
-    // Tenta descobrir o nome do novo plano (Mensal ou Anual)
     let planType = "MENSAL";
     if (subscription.plan) {
       if (subscription.plan.nickname) {
@@ -132,14 +168,12 @@ app.post('/api/webhook/stripe', express.raw({ type: 'application/json' }), async
     }
 
     try {
-      // 1. Atualiza a coleção 'assinaturas'
       const updateAssinatura = db.collection('assinaturas').doc(subscriptionId).update({
         plano: planType,
         status: statusStripe === 'active' ? 'ativa' : statusStripe,
         atualizadoEm: admin.firestore.FieldValue.serverTimestamp()
       });
 
-      // 2. Atualiza a coleção 'user'
       let updateUser = Promise.resolve();
       if (userId) {
         updateUser = db.collection('user').doc(userId).update({
@@ -156,20 +190,18 @@ app.post('/api/webhook/stripe', express.raw({ type: 'application/json' }), async
       console.error('[Erro Atualizacao Firestore Stripe]:', error.message);
     }
   }
-  // 3.3 FALHA/CANCELAMENTO: ASSINATURA DELETADA
+  // 4.3 FALHA/CANCELAMENTO: ASSINATURA DELETADA
   else if (event.type === 'customer.subscription.deleted') {
     const subscription = event.data.object;
     const subscriptionId = subscription.id; 
 
     try {
-      // 1. Atualiza o status na coleção 'assinaturas' (onde o ID do doc é o subscription.id)
       await db.collection('assinaturas').doc(subscriptionId).update({
         status: 'cancelada',
         atualizadoEm: admin.firestore.FieldValue.serverTimestamp()
       });
       console.log(`❌ [Stripe] Assinatura cancelada na coleção 'assinaturas': ${subscriptionId}`);
 
-      // 2. Atualiza a coleção 'user' usando o userId guardado no metadata
       const userId = subscription.metadata ? subscription.metadata.userId : null;
       if (userId) {
         await db.collection('user').doc(userId).update({
@@ -178,6 +210,9 @@ app.post('/api/webhook/stripe', express.raw({ type: 'application/json' }), async
           dataAtualizacao: admin.firestore.FieldValue.serverTimestamp()
         });
         console.log(`❌ [Stripe] Usuário ${userId} rebaixado para o plano gratuito.`);
+        
+        // Opcional: Avisar o usuário do cancelamento
+        await enviarPush(userId, "Assinatura Cancelada", "Seu plano premium expirou e os recursos avançados foram bloqueados.");
       }
 
     } catch (error) {
@@ -189,15 +224,15 @@ app.post('/api/webhook/stripe', express.raw({ type: 'application/json' }), async
 });
 
 // ==========================================
-// 4. MIDDLEWARES PARA AS DEMAIS ROTAS
+// 5. MIDDLEWARES PARA AS DEMAIS ROTAS
 // ==========================================
 app.use(express.json());
 
 // ==========================================
-// 5. ROTAS DE CRIAÇÃO (CHECKOUT)
+// 6. ROTAS DE CRIAÇÃO (CHECKOUT)
 // ==========================================
 
-// 5.1 STRIPE EMBEDDED
+// 6.1 STRIPE EMBEDDED
 app.post('/api/checkout-stripe-embedded', async (req, res) => {
   const { userId, planType = 'mensal' } = req.body;
   let priceId = planType.toLowerCase() === 'anual' ? process.env.STRIPE_PRICE_ANUAL : process.env.STRIPE_PRICE_MENSAL;
@@ -212,7 +247,7 @@ app.post('/api/checkout-stripe-embedded', async (req, res) => {
       metadata: { userId, planType: planType.toUpperCase() },
       subscription_data: {
         metadata: {
-          userId: userId  // Garante que o webhook saiba quem é no momento do cancelamento
+          userId: userId
         }
       },
     });
@@ -226,7 +261,7 @@ app.post('/api/checkout-stripe-embedded', async (req, res) => {
   }
 });
 
-// 5.2 WOOVI (PIX AUTOMÁTICO - COBRANÇA IMEDIATA)
+// 6.2 WOOVI (PIX AUTOMÁTICO - COBRANÇA IMEDIATA)
 app.post('/api/checkout-woovi', async (req, res) => {
   const { userId, planType = 'mensal', userCpf, userName } = req.body;
   const value = planType.toLowerCase() === 'anual' ? 19990 : 1990; 
@@ -235,9 +270,8 @@ app.post('/api/checkout-woovi', async (req, res) => {
   try {
     const cpfLimpo = userCpf.replace(/\D/g, '');
 
-    // Para pagamento imediato (PAYMENT_ON_APPROVAL), a primeira cobrança roda na hora.
     let diaAtual = new Date().getDate();
-    if (diaAtual > 28) diaAtual = 28; // Trava de segurança para meses curtos
+    if (diaAtual > 28) diaAtual = 28;
 
     const payloadImediato = {
       name: "Assinatura MedWise",
@@ -298,7 +332,7 @@ app.post('/api/checkout-woovi', async (req, res) => {
 });
 
 // ==========================================
-// 6. WEBHOOK DA WOOVI (COM ATUALIZAÇÃO COMPLETA NO FIREBASE)
+// 7. WEBHOOK DA WOOVI (COM ATUALIZAÇÃO COMPLETA NO FIREBASE)
 // ==========================================
 app.post('/api/webhook/woovi', async (req, res) => {
   try {
@@ -310,25 +344,21 @@ app.post('/api/webhook/woovi', async (req, res) => {
       const partes = correlationID.split('_');
       const userId = partes[1]; 
       
-      // Assume que o plano é MENSAL se não vier 
       const planType = "MENSAL"; 
       
-      // A Woovi envia o valor em centavos (ex: 1990 para R$ 19,90)
       const valorWoovi = webhookData.value ? webhookData.value / 100 : 0;
 
       if (evento === 'PIX_AUTOMATIC_APPROVED' || evento === 'PIX_AUTOMATIC_COBR_COMPLETED') {
         console.log(`✅ [ACESSO LIBERADO] Usuário: ${userId} | Woovi`);
         
-        // 1. Atualiza a coleção 'user' (IDÊNTICO AO STRIPE)
         const updateUser = db.collection('user').doc(userId).set({ 
           statusAssinatura: 'ativa',
           planoAtivo: planType,
           gateway: 'woovi',
-          wooviSubscriptionId: correlationID, // Necessário para a rota de cancelamento!
+          wooviSubscriptionId: correlationID, 
           dataAtualizacao: admin.firestore.FieldValue.serverTimestamp()
         }, { merge: true });
 
-        // 2. Atualiza a coleção 'assinaturas'
         const createAssinatura = db.collection('assinaturas').doc(correlationID).set({
           criadoEm: admin.firestore.FieldValue.serverTimestamp(),
           gateway: "woovi",
@@ -338,8 +368,6 @@ app.post('/api/webhook/woovi', async (req, res) => {
           userId: userId 
         }, { merge: true });
 
-        // 3. Cria o registro na coleção 'pagamentos'
-        // Usa o ID global da Woovi se existir, senão gera um ID único
         const pagamentoId = webhookData.globalID || `pay_woovi_${Date.now()}`;
         const createPagamento = db.collection('pagamentos').doc(pagamentoId).set({
           userId: userId,
@@ -351,19 +379,21 @@ app.post('/api/webhook/woovi', async (req, res) => {
           dataPagamento: admin.firestore.FieldValue.serverTimestamp()
         }, { merge: true });
 
-        // Executa as 3 ações no banco de dados simultaneamente
         await Promise.all([updateUser, createAssinatura, createPagamento]);
+        
+        // ===== DISPARO DO PUSH NOTIFICATION =====
+        if (userId) {
+          await enviarPush(userId, "Pagamento Confirmado! 🎉", "Seu PIX foi aprovado e o MedWise Premium está liberado.");
+        }
 
       } else if (evento === 'PIX_AUTOMATIC_REJECTED' || evento === 'PIX_AUTOMATIC_CANCELED' || evento === 'PIX_AUTOMATIC_COBR_REJECTED') {
         console.log(`❌ [ACESSO BLOQUEADO] Usuário: ${userId} | Woovi`);
         
-        // Cancela na coleção 'assinaturas'
         const cancelAssinatura = db.collection('assinaturas').doc(correlationID).set({
           status: "cancelada_ou_falha",
           atualizadoEm: admin.firestore.FieldValue.serverTimestamp()
         }, { merge: true });
         
-        // Cancela na coleção 'user'
         const cancelUser = db.collection('user').doc(userId).update({ 
           statusAssinatura: 'cancelada',
           planoAtivo: 'gratuito',
@@ -384,10 +414,10 @@ app.post('/api/webhook/woovi', async (req, res) => {
 });
 
 // ==========================================
-// 7. ORQUESTRADOR: GERENCIAMENTO E CANCELAMENTO
+// 8. ORQUESTRADOR: GERENCIAMENTO E CANCELAMENTO
 // ==========================================
 
-// 7.1 Rota Unificada de Portal
+// 8.1 Rota Unificada de Portal
 app.post('/api/gerenciar-assinatura', async (req, res) => {
   const { userId } = req.body;
 
@@ -415,7 +445,7 @@ app.post('/api/gerenciar-assinatura', async (req, res) => {
   }
 });
 
-// 7.2 Rota Unificada de Cancelamento
+// 8.2 Rota Unificada de Cancelamento
 app.post('/api/cancelar-assinatura', async (req, res) => {
   const { userId } = req.body;
 
@@ -448,46 +478,9 @@ app.post('/api/cancelar-assinatura', async (req, res) => {
 });
 
 // ==========================================
-// 8. INICIALIZAÇÃO DO SERVIDOR
+// 9. INICIALIZAÇÃO DO SERVIDOR
 // ==========================================
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Servidor rodando na porta ${PORT}`);
 });
-// Função genérica para enviar Push Notifications
-async function enviarPush(userId, titulo, mensagem) {
-  try {
-    // 1. Buscar o usuário no Firestore
-    const userDoc = await admin.firestore().collection('user').doc(userId).get();
-    
-    if (!userDoc.exists) {
-      console.log(`Usuário ${userId} não encontrado.`);
-      return;
-    }
-
-    const userData = userDoc.data();
-    const tokens = userData.fcm_tokens; // O FlutterFlow salva como uma lista de strings
-
-    // 2. Verificar se o usuário tem tokens válidos
-    if (!tokens || tokens.length === 0) {
-      console.log(`Usuário ${userId} não possui tokens de notificação.`);
-      return;
-    }
-
-    // 3. Montar o pacote da notificação
-    const payload = {
-      notification: {
-        title: titulo,
-        body: mensagem,
-      },
-      tokens: tokens, // Envia para todos os aparelhos do usuário
-    };
-
-    // 4. Disparar via Firebase Cloud Messaging
-    const response = await admin.messaging().sendMulticast(payload);
-    console.log(`Notificação enviada com sucesso para ${response.successCount} dispositivo(s).`);
-    
-  } catch (error) {
-    console.error('Erro ao enviar notificação:', error);
-  }
-}
