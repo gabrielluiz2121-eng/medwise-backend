@@ -239,7 +239,7 @@ app.use(express.json());
 // ==========================================
 app.post('/api/assistente', async (req, res) => {
   const { userId, mensagem } = req.body;
-  // A variável OPENAI_ASSISTANT_ID não é mais utilizada pela nova API.
+  const vectorStoreId = process.env.OPENAI_VECTOR_STORE_ID;
   
   if (!userId || !mensagem) {
     return res.status(400).json(["O userId e a mensagem são obrigatórios."]);
@@ -250,19 +250,21 @@ app.post('/api/assistente', async (req, res) => {
     const userDoc = await userDocRef.get();
     const userData = userDoc.exists ? userDoc.data() : {};
 
-    // A API Responses recebe o modelo, as ferramentas e as instruções nativamente na requisição
     const requestOptions = {
-      model: "gpt-5.6", // Utilizando o modelo mais recomendado pela documentação
-      instructions: "Você é um assistente médico especialista. Responda apenas com base nas diretrizes clínicas e bulas fornecidas. Não invente condutas.", // Define o comportamento do agente
+      model: "gpt-5.6", 
+      instructions: "Você é um assistente médico especialista. Responda apenas com base nas diretrizes clínicas e bulas fornecidas. Não invente condutas.", 
       tools: [
-        { type: "file_search" } // Ferramenta nativa que substitui o Assistant ID na busca de PDFs
+        { 
+          type: "file_search",
+          // Agora apontamos explicitamente para o banco de PDFs
+          vector_store_ids: [vectorStoreId] 
+        } 
       ],
       input: [
-        { role: "user", content: mensagem } // Nova estrutura de array para as mensagens do usuário
+        { role: "user", content: mensagem }
       ]
     };
 
-    // A nova API usa o previous_response_id para manter todo o contexto da conversa
     if (userData.openai_previous_response_id) {
       requestOptions.previous_response_id = userData.openai_previous_response_id;
     }
@@ -273,13 +275,13 @@ app.post('/api/assistente', async (req, res) => {
       openai_previous_response_id: response.id
     }, { merge: true });
 
-    // A OpenAI introduziu o helper output_text para capturar a resposta gerada com segurança
     let textoResposta = response.output_text;
 
-    // Higienização: Remove marcações da IA (ex: 【4:1†source】) do texto sem anexar uma lista de referências
+    // Remove a poluição visual gerada pela IA (ex: 【4:1†source】) do meio do texto
+    // preservando a fluidez visual sem acrescentar referências bibliográficas no final
     textoResposta = textoResposta.replace(/【.*?】/g, '');
 
-    // Retorno forçado em lista de string para agrupar os resultados no aplicativo
+    // Empacota o texto limpo em uma lista de strings para compatibilidade na interface
     return res.status(200).json([textoResposta]);
 
   } catch (error) {
