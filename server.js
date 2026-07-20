@@ -235,53 +235,55 @@ app.post('/api/webhook/stripe', express.raw({ type: 'application/json' }), async
 // ==========================================
 app.use(express.json());
 // ==========================================
-// ROTA DE INTELIGÊNCIA ARTIFICIAL (OPENAI)
+// ROTA DE INTELIGÊNCIA ARTIFICIAL (Responses API Stateful)
 // ==========================================
 app.post('/api/assistente', async (req, res) => {
-  const { mensagem, threadId } = req.body;
+  const { userId, mensagem } = req.body;
   const assistantId = process.env.OPENAI_ASSISTANT_ID;
 
-  if (!mensagem) {
-    return res.status(400).json(["A mensagem não pode estar vazia."]);
+  if (!userId || !mensagem) {
+    return res.status(400).json(["O userId e a mensagem são obrigatórios."]);
   }
 
   try {
-    // 1. Recupera ou cria uma nova Thread (conversa)
-    let currentThreadId = threadId;
-    if (!currentThreadId) {
-      const thread = await openai.beta.threads.create();
-      currentThreadId = thread.id;
-    }
+    // 1. Busca o histórico do médico no Firestore
+    const userDocRef = db.collection('user').doc(userId);
+    const userDoc = await userDocRef.get();
+    const userData = userDoc.exists ? userDoc.data() : {};
 
-    // 2. Adiciona a mensagem do médico na Thread
-    await openai.beta.threads.messages.create(currentThreadId, {
-      role: "user",
-      content: mensagem
-    });
-
-    // 3. Roda o Assistente (processa os PDFs e gera a resposta)
-    const run = await openai.beta.threads.runs.createAndPoll(currentThreadId, {
+    // 2. Monta o pacote de envio para a OpenAI
+    const requestOptions = {
       assistant_id: assistantId,
-    });
+      input: [
+        { role: "user", content: mensagem }
+      ]
+    };
 
-    if (run.status === 'completed') {
-      // 4. Busca a resposta gerada
-      const messages = await openai.beta.threads.messages.list(currentThreadId);
-      const ultimaMensagem = messages.data[0];
-      
-      let textoResposta = ultimaMensagem.content[0].text.value;
-
-      // 5. Higienização: Remove as citações geradas pela IA (ex: 【4:1†source】) do texto
-      textoResposta = textoResposta.replace(/【.*?】/g, '');
-
-      // 6. Retorno padronizado: Sempre devolve uma lista de strings
-      return res.status(200).json([textoResposta]);
-    } else {
-      return res.status(500).json(["O assistente não conseguiu concluir a análise."]);
+    // 3. Injeta a memória da conversa se existir um ID anterior salvo
+    if (userData.openai_previous_response_id) {
+      requestOptions.previous_response_id = userData.openai_previous_response_id;
     }
+
+    // 4. Dispara a requisição síncrona
+    const response = await openai.responses.create(requestOptions);
+
+    // 5. Salva o novo ID no Firestore para a próxima interação
+    await userDocRef.set({
+      openai_previous_response_id: response.id
+    }, { merge: true });
+
+    // 6. Extrai o conteúdo em Markdown
+    let textoResposta = response.output[0].content[0].text;
+
+    // 7. Remove citações da IA do meio do texto (ex: 【4:1†source】) 
+    // O texto fica limpo e referências bibliográficas extras não são geradas no final
+    textoResposta = textoResposta.replace(/【.*?】/g, '');
+
+    // 8. Retorna uma lista de strings para manter a consistência de formato na interface
+    return res.status(200).json([textoResposta]);
 
   } catch (error) {
-    console.error('[Erro OpenAI]:', error);
+    console.error('[Erro OpenAI Responses API]:', error);
     return res.status(500).json(["Erro interno de comunicação com o assistente médico."]);
   }
 });
