@@ -235,12 +235,12 @@ app.post('/api/webhook/stripe', express.raw({ type: 'application/json' }), async
 // ==========================================
 app.use(express.json());
 // ==========================================
-// ROTA DE INTELIGÊNCIA ARTIFICIAL (Responses API Stateful)
+// ROTA DE INTELIGÊNCIA ARTIFICIAL (Responses API)
 // ==========================================
 app.post('/api/assistente', async (req, res) => {
   const { userId, mensagem } = req.body;
-  const assistantId = process.env.OPENAI_ASSISTANT_ID;
-
+  // A variável OPENAI_ASSISTANT_ID não é mais utilizada pela nova API.
+  
   if (!userId || !mensagem) {
     return res.status(400).json(["O userId e a mensagem são obrigatórios."]);
   }
@@ -250,15 +250,19 @@ app.post('/api/assistente', async (req, res) => {
     const userDoc = await userDocRef.get();
     const userData = userDoc.exists ? userDoc.data() : {};
 
-    // Correção: O parâmetro correto na nova arquitetura é apenas 'assistant'
+    // A API Responses recebe o modelo, as ferramentas e as instruções nativamente na requisição
     const requestOptions = {
-      model: "gpt-4o",
-      assistant: assistantId, 
+      model: "gpt-5.6", // Utilizando o modelo mais recomendado pela documentação
+      instructions: "Você é um assistente médico especialista. Responda apenas com base nas diretrizes clínicas e bulas fornecidas. Não invente condutas.", // Define o comportamento do agente
+      tools: [
+        { type: "file_search" } // Ferramenta nativa que substitui o Assistant ID na busca de PDFs
+      ],
       input: [
-        { role: "user", content: mensagem }
+        { role: "user", content: mensagem } // Nova estrutura de array para as mensagens do usuário
       ]
     };
 
+    // A nova API usa o previous_response_id para manter todo o contexto da conversa
     if (userData.openai_previous_response_id) {
       requestOptions.previous_response_id = userData.openai_previous_response_id;
     }
@@ -269,17 +273,18 @@ app.post('/api/assistente', async (req, res) => {
       openai_previous_response_id: response.id
     }, { merge: true });
 
-    let textoResposta = response.output[0].content[0].text;
+    // A OpenAI introduziu o helper output_text para capturar a resposta gerada com segurança
+    let textoResposta = response.output_text;
 
-    // Higienização: Remove as marcações geradas pela IA do meio do texto
+    // Higienização: Remove marcações da IA (ex: 【4:1†source】) do texto sem anexar uma lista de referências
     textoResposta = textoResposta.replace(/【.*?】/g, '');
 
-    // Retorno rigoroso em lista de string para agrupar os resultados
+    // Retorno forçado em lista de string para agrupar os resultados no aplicativo
     return res.status(200).json([textoResposta]);
 
   } catch (error) {
     console.error('[Erro OpenAI Responses API]:', error);
-    return res.status(500).json(["Erro interno de comunicação com o assistente médico."]);
+    return res.status(500).json(["Erro interno de comunicação com a inteligência artificial."]);
   }
 });
 // ==========================================
