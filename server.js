@@ -246,40 +246,35 @@ app.post('/api/assistente', async (req, res) => {
   }
 
   try {
-    // 1. Busca o histórico do médico no Firestore
     const userDocRef = db.collection('user').doc(userId);
     const userDoc = await userDocRef.get();
     const userData = userDoc.exists ? userDoc.data() : {};
 
-    // 2. Monta o pacote de envio para a OpenAI
+    // Injeção do parâmetro 'model' conforme exigido pela nova API
     const requestOptions = {
+      model: "gpt-4o", // <- O modelo foi explicitamente declarado aqui
       assistant_id: assistantId,
       input: [
         { role: "user", content: mensagem }
       ]
     };
 
-    // 3. Injeta a memória da conversa se existir um ID anterior salvo
     if (userData.openai_previous_response_id) {
       requestOptions.previous_response_id = userData.openai_previous_response_id;
     }
 
-    // 4. Dispara a requisição síncrona
     const response = await openai.responses.create(requestOptions);
 
-    // 5. Salva o novo ID no Firestore para a próxima interação
     await userDocRef.set({
       openai_previous_response_id: response.id
     }, { merge: true });
 
-    // 6. Extrai o conteúdo em Markdown
     let textoResposta = response.output[0].content[0].text;
 
-    // 7. Remove citações da IA do meio do texto (ex: 【4:1†source】) 
-    // O texto fica limpo e referências bibliográficas extras não são geradas no final
+    // Higienização: Remove as citações sem gerar lista de referências
     textoResposta = textoResposta.replace(/【.*?】/g, '');
 
-    // 8. Retorna uma lista de strings para manter a consistência de formato na interface
+    // Retorno em lista de string para agrupamento correto no FlutterFlow
     return res.status(200).json([textoResposta]);
 
   } catch (error) {
