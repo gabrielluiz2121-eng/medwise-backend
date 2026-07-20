@@ -28,34 +28,37 @@ try {
 // ==========================================
 async function enviarPush(userId, titulo, mensagem) {
   try {
-    const userDoc = await admin.firestore().collection('user').doc(userId).get();
-    
-    if (!userDoc.exists) {
-      console.log(`[Push Abortado] Usuário ${userId} não encontrado.`);
+    // 1. Acessa a subcoleção fcm_tokens do usuário
+    const tokensSnapshot = await admin.firestore()
+      .collection('user')
+      .doc(userId)
+      .collection('fcm_tokens')
+      .get();
+
+    // 2. Extrai os tokens de cada documento da subcoleção
+    const tokens = tokensSnapshot.docs.map(doc => doc.data().fcm_token);
+
+    // 3. Verifica se encontramos algum token
+    if (tokens.length === 0) {
+      console.log(`[Push Abortado] Usuário ${userId} não possui tokens registrados na subcoleção.`);
       return;
     }
 
-    const userData = userDoc.data();
-    const tokens = userData.fcm_tokens;
-
-    if (!tokens || tokens.length === 0) {
-      console.log(`[Push Abortado] Usuário ${userId} não possui tokens de notificação.`);
-      return;
-    }
-
+    // 4. Montar o pacote da notificação
     const payload = {
       notification: {
         title: titulo,
         body: mensagem,
       },
-      tokens: tokens,
+      tokens: tokens, // Envia para todos os aparelhos do usuário encontrados
     };
 
+    // 5. Disparar via Firebase Cloud Messaging
     const response = await admin.messaging().sendMulticast(payload);
     console.log(`📲 Notificação Push enviada com sucesso para ${response.successCount} dispositivo(s) do usuário ${userId}.`);
     
   } catch (error) {
-    console.error('🚨 Erro crítico ao enviar notificação Push:', error);
+    console.error('🚨 Erro crítico ao buscar tokens ou enviar Push:', error);
   }
 }
 
