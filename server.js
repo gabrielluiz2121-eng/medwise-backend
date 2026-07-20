@@ -2,6 +2,10 @@ const express = require('express');
 const cors = require('cors');
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const admin = require('firebase-admin');
+const { OpenAI } = require('openai');
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+});
 
 // ==========================================
 // 1. INICIALIZAÇÃO DO FIREBASE ADMIN
@@ -230,7 +234,57 @@ app.post('/api/webhook/stripe', express.raw({ type: 'application/json' }), async
 // 5. MIDDLEWARES PARA AS DEMAIS ROTAS
 // ==========================================
 app.use(express.json());
+// ==========================================
+// ROTA DE INTELIGÊNCIA ARTIFICIAL (OPENAI)
+// ==========================================
+app.post('/api/assistente', async (req, res) => {
+  const { mensagem, threadId } = req.body;
+  const assistantId = process.env.OPENAI_ASSISTANT_ID;
 
+  if (!mensagem) {
+    return res.status(400).json(["A mensagem não pode estar vazia."]);
+  }
+
+  try {
+    // 1. Recupera ou cria uma nova Thread (conversa)
+    let currentThreadId = threadId;
+    if (!currentThreadId) {
+      const thread = await openai.beta.threads.create();
+      currentThreadId = thread.id;
+    }
+
+    // 2. Adiciona a mensagem do médico na Thread
+    await openai.beta.threads.messages.create(currentThreadId, {
+      role: "user",
+      content: mensagem
+    });
+
+    // 3. Roda o Assistente (processa os PDFs e gera a resposta)
+    const run = await openai.beta.threads.runs.createAndPoll(currentThreadId, {
+      assistant_id: assistantId,
+    });
+
+    if (run.status === 'completed') {
+      // 4. Busca a resposta gerada
+      const messages = await openai.beta.threads.messages.list(currentThreadId);
+      const ultimaMensagem = messages.data[0];
+      
+      let textoResposta = ultimaMensagem.content[0].text.value;
+
+      // 5. Higienização: Remove as citações geradas pela IA (ex: 【4:1†source】) do texto
+      textoResposta = textoResposta.replace(/【.*?】/g, '');
+
+      // 6. Retorno padronizado: Sempre devolve uma lista de strings
+      return res.status(200).json([textoResposta]);
+    } else {
+      return res.status(500).json(["O assistente não conseguiu concluir a análise."]);
+    }
+
+  } catch (error) {
+    console.error('[Erro OpenAI]:', error);
+    return res.status(500).json(["Erro interno de comunicação com o assistente médico."]);
+  }
+});
 // ==========================================
 // 6. ROTAS DE CRIAÇÃO (CHECKOUT)
 // ==========================================
@@ -386,7 +440,7 @@ app.post('/api/webhook/woovi', async (req, res) => {
         
         // ===== DISPARO DO PUSH NOTIFICATION =====
         if (userId) {
-          await enviarPush(userId, "Pagamento Confirmado! 🎉", "Seu PIX foi aprovado e o MedWise Premium está liberado.");
+          await enviarPush(userId, "Pagamento Confirmado! 🎉", "Bem-vindo ao MedWise Premium. Todos os recursos foram liberados.");
         }
 
       } else if (evento === 'PIX_AUTOMATIC_REJECTED' || evento === 'PIX_AUTOMATIC_CANCELED' || evento === 'PIX_AUTOMATIC_COBR_REJECTED') {
