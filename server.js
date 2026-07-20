@@ -250,10 +250,10 @@ app.post('/api/assistente', async (req, res) => {
     const userDoc = await userDocRef.get();
     const userData = userDoc.exists ? userDoc.data() : {};
 
-    // Injeção do parâmetro 'model' conforme exigido pela nova API
+    // Correção: O parâmetro correto na nova arquitetura é apenas 'assistant'
     const requestOptions = {
-      model: "gpt-4o", // <- O modelo foi explicitamente declarado aqui
-      assistant_id: assistantId,
+      model: "gpt-4o",
+      assistant: assistantId, 
       input: [
         { role: "user", content: mensagem }
       ]
@@ -271,10 +271,10 @@ app.post('/api/assistente', async (req, res) => {
 
     let textoResposta = response.output[0].content[0].text;
 
-    // Higienização: Remove as citações sem gerar lista de referências
+    // Higienização: Remove as marcações geradas pela IA do meio do texto
     textoResposta = textoResposta.replace(/【.*?】/g, '');
 
-    // Retorno em lista de string para agrupamento correto no FlutterFlow
+    // Retorno rigoroso em lista de string para agrupar os resultados
     return res.status(200).json([textoResposta]);
 
   } catch (error) {
