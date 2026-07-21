@@ -322,6 +322,88 @@ app.post('/api/assistente/limpar', async (req, res) => {
   }
 });
 // ==========================================
+// ROTA DE ANÁLISE DE GASOMETRIA (Structured Output)
+// ==========================================
+app.post('/api/gasometria', async (req, res) => {
+  const { userId, mensagem } = req.body;
+
+  if (!userId || !mensagem) {
+    return res.status(400).json(["O userId e os dados da gasometria são obrigatórios."]);
+  }
+
+  try {
+    const requestOptions = {
+      model: "gpt-5.6",
+      instructions: `Você é um assistente médico do MedWise, especializado em medicina intensiva. 
+Avalie os valores da gasometria arterial fornecidos no prompt.
+REGRAS OBRIGATÓRIAS:
+1. Para cada parâmetro, indique estritamente com um número: diminuído (0), normal (1) ou aumentado (2).
+2. Forneça uma interpretação global com diagnóstico provável, compensações, possíveis causas e condutas gerais.
+3. Use linguagem clara, objetiva e adequada ao uso clínico.`,
+      // Aqui entra o seu esquema rigoroso forçando o formato JSON
+      response_format: {
+        type: "json_schema",
+        json_schema: {
+          name: "gasometria_response",
+          strict: true,
+          schema: {
+            type: "object",
+            properties: {
+              analise_parametros: {
+                type: "object",
+                properties: {
+                  pH: { type: "integer" },
+                  PaCO2: { type: "integer" },
+                  HCO3: { type: "integer" },
+                  PaO2: { type: "integer" },
+                  Na: { type: "integer" },
+                  Cl: { type: "integer" }
+                },
+                required: ["pH", "PaCO2", "HCO3", "PaO2", "Na", "Cl"],
+                additionalProperties: false
+              },
+              interpretacao_global: {
+                type: "object",
+                properties: {
+                  diagnostico_principal: { type: "string" },
+                  possiveis_causas: {
+                    type: "array",
+                    items: { type: "string" }
+                  },
+                  condutas_sugeridas: {
+                    type: "array",
+                    items: { type: "string" }
+                  }
+                },
+                required: ["diagnostico_principal", "possiveis_causas", "condutas_sugeridas"],
+                additionalProperties: false
+              }
+            },
+            required: ["analise_parametros", "interpretacao_global"],
+            additionalProperties: false
+          }
+        }
+      },
+      input: [
+        { role: "user", content: mensagem }
+      ]
+    };
+
+    const response = await openai.responses.create(requestOptions);
+
+    // O output_text virá exatamente no formato do seu JSON Schema
+    let textoResposta = response.output_text;
+
+    // Retornamos rigorosamente em uma lista de string para compatibilidade
+    // com a sua extração JSON já consolidada no FlutterFlow
+    return res.status(200).json([textoResposta]);
+
+  } catch (error) {
+    console.error('[Erro Gasometria API]:', error);
+    return res.status(500).json(["Erro interno ao analisar os dados da gasometria."]);
+  }
+});
+// ==========================================
 // 6. ROTAS DE CRIAÇÃO (CHECKOUT)
 // ==========================================
 
