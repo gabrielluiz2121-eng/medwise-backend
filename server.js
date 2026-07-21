@@ -250,13 +250,18 @@ app.post('/api/assistente', async (req, res) => {
     const userDoc = await userDocRef.get();
     const userData = userDoc.exists ? userDoc.data() : {};
 
-    const requestOptions = {
+const requestOptions = {
       model: "gpt-5.6", 
-      instructions: "Você é um assistente médico especialista. Responda apenas com base nas diretrizes clínicas e bulas fornecidas. Não invente condutas.", 
+      instructions: `Você é o assistente clínico do MedWise, voltado exclusivamente para médicos e estudantes de medicina. Atue como suporte técnico avançado para raciocínio diagnóstico, condutas, exames e cálculos clínicos. 
+REGRAS OBRIGATÓRIAS: 
+1. Responda APENAS sobre medicina. Recuse educadamente outros temas. 
+2. Priorize os documentos anexados. Se faltar algo, utilize apenas diretrizes reconhecidas (OMS, MS, SBC, AHA, etc.). 
+3. Se o caso estiver incompleto, solicite parâmetros extras (sinais vitais, laboratório). Não feche diagnósticos no escuro. 
+4. Use linguagem médica técnica e objetiva. 
+5. NUNCA oriente o usuário a "procurar atendimento médico" ou "consultar um médico", pois você está conversando com o profissional responsável pelo caso.`,
       tools: [
         { 
           type: "file_search",
-          // Agora apontamos explicitamente para o banco de PDFs
           vector_store_ids: [vectorStoreId] 
         } 
       ],
