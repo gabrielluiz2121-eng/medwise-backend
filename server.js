@@ -340,49 +340,47 @@ REGRAS OBRIGATÓRIAS:
 1. Para cada parâmetro, indique estritamente com um número: diminuído (0), normal (1) ou aumentado (2).
 2. Forneça uma interpretação global com diagnóstico provável, compensações, possíveis causas e condutas gerais.
 3. Use linguagem clara, objetiva e adequada ao uso clínico.`,
-      // A nova sintaxe exige que o formato fique dentro da propriedade 'text'
       text: {
         format: {
           type: "json_schema",
-          json_schema: {
-            name: "gasometria_response",
-            strict: true,
-            schema: {
-              type: "object",
-              properties: {
-                analise_parametros: {
-                  type: "object",
-                  properties: {
-                    pH: { type: "integer" },
-                    PaCO2: { type: "integer" },
-                    HCO3: { type: "integer" },
-                    PaO2: { type: "integer" },
-                    Na: { type: "integer" },
-                    Cl: { type: "integer" }
-                  },
-                  required: ["pH", "PaCO2", "HCO3", "PaO2", "Na", "Cl"],
-                  additionalProperties: false
+          // Os parâmetros foram "achatados" diretamente no nível do format
+          name: "gasometria_response",
+          strict: true,
+          schema: {
+            type: "object",
+            properties: {
+              analise_parametros: {
+                type: "object",
+                properties: {
+                  pH: { type: "integer" },
+                  PaCO2: { type: "integer" },
+                  HCO3: { type: "integer" },
+                  PaO2: { type: "integer" },
+                  Na: { type: "integer" },
+                  Cl: { type: "integer" }
                 },
-                interpretacao_global: {
-                  type: "object",
-                  properties: {
-                    diagnostico_principal: { type: "string" },
-                    possiveis_causas: {
-                      type: "array",
-                      items: { type: "string" }
-                    },
-                    condutas_sugeridas: {
-                      type: "array",
-                      items: { type: "string" }
-                    }
-                  },
-                  required: ["diagnostico_principal", "possiveis_causas", "condutas_sugeridas"],
-                  additionalProperties: false
-                }
+                required: ["pH", "PaCO2", "HCO3", "PaO2", "Na", "Cl"],
+                additionalProperties: false
               },
-              required: ["analise_parametros", "interpretacao_global"],
-              additionalProperties: false
-            }
+              interpretacao_global: {
+                type: "object",
+                properties: {
+                  diagnostico_principal: { type: "string" },
+                  possiveis_causas: {
+                    type: "array",
+                    items: { type: "string" }
+                  },
+                  condutas_sugeridas: {
+                    type: "array",
+                    items: { type: "string" }
+                  }
+                },
+                required: ["diagnostico_principal", "possiveis_causas", "condutas_sugeridas"],
+                additionalProperties: false
+              }
+            },
+            required: ["analise_parametros", "interpretacao_global"],
+            additionalProperties: false
           }
         }
       },
@@ -398,7 +396,7 @@ REGRAS OBRIGATÓRIAS:
     // Remove as citações geradas pela IA do meio do texto sem adicionar referências no final
     textoResposta = textoResposta.replace(/【.*?】/g, '');
 
-    // O retorno continua sendo uma lista de string para agrupar resultados e manter a compatibilidade
+    // Retorno em lista de string para agrupar resultados perfeitamente no FlutterFlow
     return res.status(200).json([textoResposta]);
 
   } catch (error) {
