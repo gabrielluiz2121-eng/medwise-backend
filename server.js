@@ -290,6 +290,33 @@ app.post('/api/assistente', async (req, res) => {
   }
 });
 // ==========================================
+// ROTA PARA LIMPAR HISTÓRICO DA IA
+// ==========================================
+app.post('/api/assistente/limpar', async (req, res) => {
+  const { userId } = req.body;
+
+  if (!userId) {
+    return res.status(400).json(["O userId é obrigatório para limpar o histórico."]);
+  }
+
+  try {
+    const userDocRef = db.collection('user').doc(userId);
+    
+    // Atualiza o documento removendo o ID da conversa anterior.
+    // Usamos null para que na próxima chamada o 'if' do contexto seja ignorado.
+    await userDocRef.set({
+      openai_previous_response_id: null
+    }, { merge: true });
+
+    // Retorna uma lista de string para manter o formato padronizado no frontend
+    return res.status(200).json(["Histórico da consulta reiniciado com sucesso."]);
+
+  } catch (error) {
+    console.error('[Erro ao limpar histórico]:', error);
+    return res.status(500).json(["Erro interno ao tentar limpar a memória do assistente."]);
+  }
+});
+// ==========================================
 // 6. ROTAS DE CRIAÇÃO (CHECKOUT)
 // ==========================================
 
