@@ -323,7 +323,7 @@ async function verificarAdmin(req, res, next) {
 
 app.get('/api/admin/usuarios', verificarAdmin, async (req, res) => {
   try {
-    const { email, limite = 50, cursor } = req.query;
+    const { email, limite = 1000, cursor } = req.query;
     let query = db.collection('user');
 
     if (email) {
