@@ -323,7 +323,7 @@ async function verificarAdmin(req, res, next) {
 
 app.get('/api/admin/usuarios', verificarAdmin, async (req, res) => {
   try {
-    const { email, limite = 50 } = req.query;
+    const { email, limite = 50, cursor } = req.query;
     let query = db.collection('user');
 
     if (email) {
@@ -333,12 +333,17 @@ app.get('/api/admin/usuarios', verificarAdmin, async (req, res) => {
       // isso nunca exclui usuários que ainda não têm esse campo (ex: quem
       // nunca assinou), já que todo documento tem um ID.
       query = query.orderBy(admin.firestore.FieldPath.documentId());
+      if (cursor) {
+        query = query.startAfter(cursor);
+      }
     }
 
     const snapshot = await query.limit(Number(limite)).get();
     const usuarios = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    const proximoCursor = snapshot.docs.length > 0 ? snapshot.docs[snapshot.docs.length - 1].id : null;
+    const temMais = !email && snapshot.docs.length === Number(limite);
 
-    return res.json({ usuarios });
+    return res.json({ usuarios, proximoCursor, temMais });
   } catch (error) {
     console.error('[Erro admin/usuarios]:', error.message);
     return res.status(500).json({ error: "erro_ao_listar_usuarios" });
