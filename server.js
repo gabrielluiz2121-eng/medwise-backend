@@ -660,3 +660,65 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Servidor rodando na porta ${PORT}`);
 });
+// ==========================================
+// ADICIONE ESTAS DUAS ROTAS AO SEU server.js (Railway)
+// ==========================================
+//
+// Onde colocar: junto das outras rotas, depois de "app.use(express.json());"
+// (mesma seção onde estão /api/checkout-stripe-embedded e /api/checkout-woovi).
+//
+// Confirmado no Firestore: os campos no documento user/{userId} são
+// "display_name" e "email" (não "nome" — ajustei aqui embaixo).
+
+// ------------------------------------------
+// Perfil do usuário (nome + e-mail para a Woovi/checkout)
+// ------------------------------------------
+app.get('/api/perfil-usuario', async (req, res) => {
+  const { userId } = req.query;
+
+  if (!userId) {
+    return res.status(400).json({ error: "userId é obrigatório" });
+  }
+
+  try {
+    const userDoc = await db.collection('user').doc(userId).get();
+
+    if (!userDoc.exists) {
+      return res.status(404).json({ error: "usuario_nao_encontrado" });
+    }
+
+    const { display_name, email } = userDoc.data();
+    return res.json({ nome: display_name || "", email: email || "" });
+
+  } catch (error) {
+    console.error('[Erro perfil-usuario]:', error.message);
+    return res.status(500).json({ error: "erro_ao_consultar_perfil" });
+  }
+});
+
+// ------------------------------------------
+// Status da assinatura (a página de checkout consulta isso a cada
+// poucos segundos para saber quando mostrar a tela de sucesso)
+// ------------------------------------------
+app.get('/api/status-assinatura', async (req, res) => {
+  const { userId } = req.query;
+
+  if (!userId) {
+    return res.status(400).json({ error: "userId é obrigatório" });
+  }
+
+  try {
+    const userDoc = await db.collection('user').doc(userId).get();
+
+    if (!userDoc.exists) {
+      return res.status(404).json({ error: "usuario_nao_encontrado" });
+    }
+
+    const { statusAssinatura, planoAtivo } = userDoc.data();
+    return res.json({ statusAssinatura: statusAssinatura || 'gratuito', planoAtivo });
+
+  } catch (error) {
+    console.error('[Erro status-assinatura]:', error.message);
+    return res.status(500).json({ error: "erro_ao_consultar_status" });
+  }
+});
