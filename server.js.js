@@ -66,6 +66,25 @@ async function enviarPush(userId, titulo, mensagem) {
   }
 }
 
+// ==========================================
+// 2.1 AVISO DE NOVA ASSINATURA (pra você mesmo, via push no app)
+// ==========================================
+// Configure no Railway (Variables): ADMIN_USER_IDS = uid1,uid2,uid3
+// (as contas que você fica logado no seu celular — recebe em todas)
+const ADMIN_USER_IDS = (process.env.ADMIN_USER_IDS || '')
+  .split(',')
+  .map(s => s.trim())
+  .filter(Boolean);
+
+async function avisarAdminNovaAssinatura(userId, planType, gateway) {
+  if (ADMIN_USER_IDS.length === 0) return;
+
+  const mensagem = `Usuário ${userId} assinou o plano ${planType} via ${gateway}.`;
+  await Promise.all(
+    ADMIN_USER_IDS.map(adminId => enviarPush(adminId, "🎉 Nova assinatura!", mensagem))
+  );
+}
+
 const app = express();
 app.use(cors());
 
@@ -152,6 +171,7 @@ app.post('/api/webhook/stripe', express.raw({ type: 'application/json' }), async
       // ===== DISPARO DO PUSH NOTIFICATION =====
       if (userId) {
         await enviarPush(userId, "Assinatura Confirmada! 🎉", "Bem-vindo ao MedWise Premium. Todos os recursos foram liberados.");
+        await avisarAdminNovaAssinatura(userId, planType, 'stripe');
       }
 
     } catch (error) {
@@ -841,6 +861,7 @@ app.post('/api/webhook/woovi', async (req, res) => {
         // pra não mandar "bem-vindo" todo mês pro mesmo assinante.
         if (userId && evento === 'PIX_AUTOMATIC_APPROVED') {
           await enviarPush(userId, "Assinatura Confirmada! 🎉", "Bem-vindo ao MedWise Premium. Todos os recursos foram liberados.");
+          await avisarAdminNovaAssinatura(userId, planType, 'woovi');
         } else if (userId && evento === 'PIX_AUTOMATIC_COBR_COMPLETED') {
           await enviarPush(userId, "Pagamento recebido", "Sua assinatura MedWise Premium foi renovada com sucesso.");
         }
