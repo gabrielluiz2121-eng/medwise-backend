@@ -329,7 +329,10 @@ app.get('/api/admin/usuarios', verificarAdmin, async (req, res) => {
     if (email) {
       query = query.where('email', '==', email);
     } else {
-      query = query.orderBy('dataAtualizacao', 'desc');
+      // Ordena pelo próprio ID do documento — ao contrário de "dataAtualizacao",
+      // isso nunca exclui usuários que ainda não têm esse campo (ex: quem
+      // nunca assinou), já que todo documento tem um ID.
+      query = query.orderBy(admin.firestore.FieldPath.documentId());
     }
 
     const snapshot = await query.limit(Number(limite)).get();
@@ -409,6 +412,93 @@ app.post('/api/admin/cancelar-assinatura', verificarAdmin, async (req, res) => {
   } catch (error) {
     console.error('[Erro admin/cancelar-assinatura]:', error.message);
     return res.status(500).json({ error: "erro_ao_cancelar" });
+  }
+});
+
+// Detalhes completos de um usuário específico (pra abrir o modal de edição)
+app.get('/api/admin/usuario/:userId', verificarAdmin, async (req, res) => {
+  try {
+    const userDoc = await db.collection('user').doc(req.params.userId).get();
+    if (!userDoc.exists) {
+      return res.status(404).json({ error: "usuario_nao_encontrado" });
+    }
+    return res.json({ id: userDoc.id, ...userDoc.data() });
+  } catch (error) {
+    console.error('[Erro admin/usuario GET]:', error.message);
+    return res.status(500).json({ error: "erro_ao_buscar_usuario" });
+  }
+});
+
+// Edita campos de cadastro (não mexe em plano/assinatura — isso é a rota de promover)
+const CAMPOS_EDITAVEIS = [
+  'display_name', 'email', 'phone_number', 'especialidade',
+  'genero', 'nivel', 'graduacao', 'data_de_nascimento'
+];
+
+app.put('/api/admin/usuario/:userId', verificarAdmin, async (req, res) => {
+  try {
+    const atualizacoes = {};
+    for (const campo of CAMPOS_EDITAVEIS) {
+      if (req.body[campo] === undefined || req.body[campo] === "") continue;
+
+      if (campo === 'data_de_nascimento') {
+        atualizacoes[campo] = admin.firestore.Timestamp.fromDate(new Date(req.body[campo]));
+      } else if (campo === 'graduacao') {
+        atualizacoes[campo] = Number(req.body[campo]);
+      } else {
+        atualizacoes[campo] = req.body[campo];
+      }
+    }
+
+    if (Object.keys(atualizacoes).length === 0) {
+      return res.status(400).json({ error: "nenhum_campo_valido_enviado" });
+    }
+
+    await db.collection('user').doc(req.params.userId).set(atualizacoes, { merge: true });
+    console.log(`[Admin] ${req.adminEmail} editou o cadastro de ${req.params.userId}`);
+    return res.json({ status: "atualizado" });
+
+  } catch (error) {
+    console.error('[Erro admin/usuario PUT]:', error.message);
+    return res.status(500).json({ error: "erro_ao_atualizar_usuario" });
+  }
+});
+
+// Promove manualmente o plano de um usuário (cortesia, correção, etc.)
+app.post('/api/admin/promover-usuario', verificarAdmin, async (req, res) => {
+  const { userId, plano } = req.body;
+
+  if (!userId || !plano) {
+    return res.status(400).json({ error: "userId_e_plano_sao_obrigatorios" });
+  }
+
+  try {
+    const userDoc = await db.collection('user').doc(userId).get();
+    if (!userDoc.exists) {
+      return res.status(404).json({ error: "usuario_nao_encontrado" });
+    }
+    const userData = userDoc.data();
+
+    const atualizacoes = {
+      planoAtivo: plano.toUpperCase(),
+      statusAssinatura: 'ativa',
+      dataAtualizacao: admin.firestore.FieldValue.serverTimestamp()
+    };
+
+    // Só marca como "manual" se a pessoa não tiver um gateway de pagamento
+    // de verdade já associado — não queremos sobrescrever uma assinatura
+    // real que já está sendo cobrada de fato.
+    if (!userData.gateway) {
+      atualizacoes.gateway = 'manual';
+    }
+
+    await db.collection('user').doc(userId).set(atualizacoes, { merge: true });
+    console.log(`[Admin] ${req.adminEmail} promoveu ${userId} para o plano ${plano}`);
+    return res.json({ status: "promovido" });
+
+  } catch (error) {
+    console.error('[Erro admin/promover-usuario]:', error.message);
+    return res.status(500).json({ error: "erro_ao_promover" });
   }
 });
 
@@ -703,7 +793,7 @@ app.post('/api/webhook/woovi', async (req, res) => {
       const valorWoovi = webhookData.value ? webhookData.value / 100 : 0;
 
       if (evento === 'PIX_AUTOMATIC_APPROVED' || evento === 'PIX_AUTOMATIC_COBR_COMPLETED') {
-        console.log(`✅ [ACESSO LIBERADO] Usuário: ${userId} | Woovi`);
+        console.log(`✅ [ACESSO LIBERADO] Usuário: ${userId} | Woovi | Evento: ${evento}`);
         
         const updateUser = db.collection('user').doc(userId).set({ 
           statusAssinatura: 'ativa',
@@ -722,22 +812,32 @@ app.post('/api/webhook/woovi', async (req, res) => {
           userId: userId 
         }, { merge: true });
 
-        const pagamentoId = webhookData.globalID || `pay_woovi_${Date.now()}`;
-        const createPagamento = db.collection('pagamentos').doc(pagamentoId).set({
-          userId: userId,
-          plano: planType,
-          valor: valorWoovi,
-          moeda: 'brl',
-          statusPagamento: evento === 'PIX_AUTOMATIC_COBR_COMPLETED' ? 'paid' : 'approved',
-          gateway: 'woovi',
-          dataPagamento: admin.firestore.FieldValue.serverTimestamp()
-        }, { merge: true });
+        // Só registra um PAGAMENTO de verdade quando a cobrança realmente
+        // completa (PIX_AUTOMATIC_APPROVED é só a autorização da recorrência,
+        // não uma cobrança em si — evita duplicar o registro no dashboard).
+        let createPagamento = Promise.resolve();
+        if (evento === 'PIX_AUTOMATIC_COBR_COMPLETED') {
+          const pagamentoId = webhookData.globalID || `pay_woovi_${correlationID}_${Date.now()}`;
+          createPagamento = db.collection('pagamentos').doc(pagamentoId).set({
+            userId: userId,
+            plano: planType,
+            valor: valorWoovi,
+            moeda: 'brl',
+            statusPagamento: 'paid',
+            gateway: 'woovi',
+            dataPagamento: admin.firestore.FieldValue.serverTimestamp()
+          }, { merge: true });
+        }
 
         await Promise.all([updateUser, createAssinatura, createPagamento]);
         
         // ===== DISPARO DO PUSH NOTIFICATION =====
-        if (userId) {
-          await enviarPush(userId, "Pagamento Confirmado! 🎉", "Bem-vindo ao MedWise Premium. Todos os recursos foram liberados.");
+        // Mensagem diferente pra primeira liberação vs. renovação mensal,
+        // pra não mandar "bem-vindo" todo mês pro mesmo assinante.
+        if (userId && evento === 'PIX_AUTOMATIC_APPROVED') {
+          await enviarPush(userId, "Assinatura Confirmada! 🎉", "Bem-vindo ao MedWise Premium. Todos os recursos foram liberados.");
+        } else if (userId && evento === 'PIX_AUTOMATIC_COBR_COMPLETED') {
+          await enviarPush(userId, "Pagamento recebido", "Sua assinatura MedWise Premium foi renovada com sucesso.");
         }
 
       } else if (evento === 'PIX_AUTOMATIC_REJECTED' || evento === 'PIX_AUTOMATIC_CANCELED' || evento === 'PIX_AUTOMATIC_COBR_REJECTED') {
