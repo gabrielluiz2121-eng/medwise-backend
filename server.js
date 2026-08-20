@@ -234,6 +234,184 @@ app.post('/api/webhook/stripe', express.raw({ type: 'application/json' }), async
 // 5. MIDDLEWARES PARA AS DEMAIS ROTAS
 // ==========================================
 app.use(express.json());
+
+// ==========================================
+// 5.1 PERFIL DO USUÁRIO E STATUS DA ASSINATURA (usados pela página de checkout)
+// ==========================================
+app.get('/api/perfil-usuario', async (req, res) => {
+  const { userId } = req.query;
+
+  if (!userId) {
+    return res.status(400).json({ error: "userId é obrigatório" });
+  }
+
+  try {
+    const userDoc = await db.collection('user').doc(userId).get();
+
+    if (!userDoc.exists) {
+      return res.status(404).json({ error: "usuario_nao_encontrado" });
+    }
+
+    const { display_name, email } = userDoc.data();
+    return res.json({ nome: display_name || "", email: email || "" });
+
+  } catch (error) {
+    console.error('[Erro perfil-usuario]:', error.message);
+    return res.status(500).json({ error: "erro_ao_consultar_perfil" });
+  }
+});
+
+app.get('/api/status-assinatura', async (req, res) => {
+  const { userId } = req.query;
+
+  if (!userId) {
+    return res.status(400).json({ error: "userId é obrigatório" });
+  }
+
+  try {
+    const userDoc = await db.collection('user').doc(userId).get();
+
+    if (!userDoc.exists) {
+      return res.status(404).json({ error: "usuario_nao_encontrado" });
+    }
+
+    const { statusAssinatura, planoAtivo } = userDoc.data();
+    return res.json({ statusAssinatura: statusAssinatura || 'gratuito', planoAtivo });
+
+  } catch (error) {
+    console.error('[Erro status-assinatura]:', error.message);
+    return res.status(500).json({ error: "erro_ao_consultar_status" });
+  }
+});
+
+// ==========================================
+// 5.2 PAINEL ADMINISTRATIVO
+// ==========================================
+//
+// Configure no Railway (Variables): ADMIN_EMAIL = gabrielluiz2121@gmail.com
+//
+// O painel (frontend separado) faz login com Firebase Auth e manda o
+// token resultante em todo request, no cabeçalho:
+//   Authorization: Bearer <token>
+// Este middleware verifica esse token direto com o Firebase e confirma
+// que o e-mail da conta logada bate com ADMIN_EMAIL.
+
+async function verificarAdmin(req, res, next) {
+  const authHeader = req.headers.authorization || '';
+  const token = authHeader.startsWith('Bearer ') ? authHeader.split('Bearer ')[1] : null;
+
+  if (!token) {
+    return res.status(401).json({ error: "token_ausente" });
+  }
+
+  try {
+    const decoded = await admin.auth().verifyIdToken(token);
+
+    if (decoded.email !== process.env.ADMIN_EMAIL) {
+      console.warn(`[Admin] Tentativa de acesso negada para: ${decoded.email}`);
+      return res.status(403).json({ error: "acesso_negado" });
+    }
+
+    req.adminEmail = decoded.email;
+    next();
+
+  } catch (error) {
+    console.error('[Erro verificarAdmin]:', error.message);
+    return res.status(401).json({ error: "token_invalido" });
+  }
+}
+
+app.get('/api/admin/usuarios', verificarAdmin, async (req, res) => {
+  try {
+    const { email, limite = 50 } = req.query;
+    let query = db.collection('user');
+
+    if (email) {
+      query = query.where('email', '==', email);
+    } else {
+      query = query.orderBy('dataAtualizacao', 'desc');
+    }
+
+    const snapshot = await query.limit(Number(limite)).get();
+    const usuarios = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+
+    return res.json({ usuarios });
+  } catch (error) {
+    console.error('[Erro admin/usuarios]:', error.message);
+    return res.status(500).json({ error: "erro_ao_listar_usuarios" });
+  }
+});
+
+app.get('/api/admin/pagamentos', verificarAdmin, async (req, res) => {
+  try {
+    const { limite = 50 } = req.query;
+    const snapshot = await db.collection('pagamentos')
+      .orderBy('dataPagamento', 'desc')
+      .limit(Number(limite))
+      .get();
+
+    const pagamentos = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    return res.json({ pagamentos });
+  } catch (error) {
+    console.error('[Erro admin/pagamentos]:', error.message);
+    return res.status(500).json({ error: "erro_ao_listar_pagamentos" });
+  }
+});
+
+app.get('/api/admin/assinaturas', verificarAdmin, async (req, res) => {
+  try {
+    const { limite = 50 } = req.query;
+    const snapshot = await db.collection('assinaturas')
+      .orderBy('criadoEm', 'desc')
+      .limit(Number(limite))
+      .get();
+
+    const assinaturas = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    return res.json({ assinaturas });
+  } catch (error) {
+    console.error('[Erro admin/assinaturas]:', error.message);
+    return res.status(500).json({ error: "erro_ao_listar_assinaturas" });
+  }
+});
+
+app.post('/api/admin/cancelar-assinatura', verificarAdmin, async (req, res) => {
+  const { userId } = req.body;
+
+  if (!userId) {
+    return res.status(400).json({ error: "userId é obrigatório" });
+  }
+
+  try {
+    const userDoc = await db.collection('user').doc(userId).get();
+    if (!userDoc.exists) {
+      return res.status(404).json({ error: "usuario_nao_encontrado" });
+    }
+    const userData = userDoc.data();
+
+    if (userData.gateway === 'stripe' && userData.stripeSubscriptionId) {
+      await stripe.subscriptions.cancel(userData.stripeSubscriptionId);
+    } else if (userData.gateway === 'woovi' && userData.wooviSubscriptionId) {
+      const response = await fetch(`https://api.woovi.com/api/v1/subscriptions/${userData.wooviSubscriptionId}/cancel`, {
+        method: 'PUT',
+        headers: { 'Authorization': process.env.WOOVI_APP_ID }
+      });
+      if (!response.ok) throw new Error("Falha na Woovi");
+    }
+
+    await db.collection('user').doc(userId).update({
+      statusAssinatura: 'cancelada',
+      planoAtivo: 'gratuito'
+    });
+
+    console.log(`[Admin] ${req.adminEmail} cancelou a assinatura de ${userId}`);
+    return res.json({ status: "cancelamento_efetuado" });
+
+  } catch (error) {
+    console.error('[Erro admin/cancelar-assinatura]:', error.message);
+    return res.status(500).json({ error: "erro_ao_cancelar" });
+  }
+});
+
 // ==========================================
 // ROTA DE INTELIGÊNCIA ARTIFICIAL (Responses API)
 // ==========================================
@@ -659,66 +837,4 @@ app.post('/api/cancelar-assinatura', async (req, res) => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Servidor rodando na porta ${PORT}`);
-});
-// ==========================================
-// ADICIONE ESTAS DUAS ROTAS AO SEU server.js (Railway)
-// ==========================================
-//
-// Onde colocar: junto das outras rotas, depois de "app.use(express.json());"
-// (mesma seção onde estão /api/checkout-stripe-embedded e /api/checkout-woovi).
-//
-// Confirmado no Firestore: os campos no documento user/{userId} são
-// "display_name" e "email" (não "nome" — ajustei aqui embaixo).
-
-// ------------------------------------------
-// Perfil do usuário (nome + e-mail para a Woovi/checkout)
-// ------------------------------------------
-app.get('/api/perfil-usuario', async (req, res) => {
-  const { userId } = req.query;
-
-  if (!userId) {
-    return res.status(400).json({ error: "userId é obrigatório" });
-  }
-
-  try {
-    const userDoc = await db.collection('user').doc(userId).get();
-
-    if (!userDoc.exists) {
-      return res.status(404).json({ error: "usuario_nao_encontrado" });
-    }
-
-    const { display_name, email } = userDoc.data();
-    return res.json({ nome: display_name || "", email: email || "" });
-
-  } catch (error) {
-    console.error('[Erro perfil-usuario]:', error.message);
-    return res.status(500).json({ error: "erro_ao_consultar_perfil" });
-  }
-});
-
-// ------------------------------------------
-// Status da assinatura (a página de checkout consulta isso a cada
-// poucos segundos para saber quando mostrar a tela de sucesso)
-// ------------------------------------------
-app.get('/api/status-assinatura', async (req, res) => {
-  const { userId } = req.query;
-
-  if (!userId) {
-    return res.status(400).json({ error: "userId é obrigatório" });
-  }
-
-  try {
-    const userDoc = await db.collection('user').doc(userId).get();
-
-    if (!userDoc.exists) {
-      return res.status(404).json({ error: "usuario_nao_encontrado" });
-    }
-
-    const { statusAssinatura, planoAtivo } = userDoc.data();
-    return res.json({ statusAssinatura: statusAssinatura || 'gratuito', planoAtivo });
-
-  } catch (error) {
-    console.error('[Erro status-assinatura]:', error.message);
-    return res.status(500).json({ error: "erro_ao_consultar_status" });
-  }
 });
